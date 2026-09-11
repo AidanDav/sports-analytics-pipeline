@@ -1,0 +1,44 @@
+services:
+  db:
+    # Alpine is a minimal Docker image based on Alpine Linux with a complete package index
+    image: postgres:16-alpine
+    environment:
+      #It will read from my .env file, if not found it will use the default values provided
+      POSTGRES_USER: ${POSTGRES_USER:-sports_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-sports_analytics}
+    #Maps the container's port to my machine so tools can connect directly
+    ports:
+      - "5432:5432"
+    #This is a named volume, without it, the database disappears everytime 'docker compose down' is ran. The named volume persists between starts
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sports_user} -d ${POSTGRES_DB:-sports_analytics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      #This tells docker to build an image from the Dockerfile in the backend directory
+      context: ./backend
+      dockerfile: Dockerfile
+    #Overrides the Docker's default command with a dev-friendly one. 
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    #Mounts my local backend/ folder into the container, so when I edit code on my machine, the container sees the changes instantly.
+    #Without this, I would have to rebuild the image every time I make a change to the code.
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    #This is why healthcheck is important. It ensures that the backend service will only start after 
+    #the db service is healthy and ready to accept connections.
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
