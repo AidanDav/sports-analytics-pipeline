@@ -4,6 +4,7 @@ FROM python:3.11-slim
 
 #Sets the working directory inside the container to /app. All subsequent commands will be run from this directory.
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 #Build Dependencies: Installs the necessary build dependencies for compiling Python packages that require native extensions.
 RUN apt-get update && apt-get install -y --no-install-recommends \
