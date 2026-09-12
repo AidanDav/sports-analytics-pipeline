@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.game import Game
 from app.models.team import Team
+from app.schemas import GameResponse, PaginatedResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/games", tags=["games"])
 
 
-@router.get("")
+@router.get("", response_model=PaginatedResponse[GameResponse])
 async def get_games(
     season: int | None = None,
     week: int | None = None,
@@ -58,23 +59,23 @@ async def get_games(
         )
         team_lookup = {t.id: t.name for t in team_result.scalars().all()}
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "data": [
-            {
-                "id": game.id,
-                "season": game.season,
-                "week": game.week,
-                "home_team": team_lookup.get(game.home_team_id, "Unknown"),
-                "away_team": team_lookup.get(game.away_team_id, "Unknown"),
-                "home_score": game.home_score,
-                "away_score": game.away_score,
-                "game_date": str(game.game_date) if game.game_date else None,
-                "status": game.status,
-                "venue": game.venue,
-            }
+    return PaginatedResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        data=[
+            GameResponse(
+                id=game.id,
+                season=game.season,
+                week=game.week,
+                home_team=team_lookup.get(game.home_team_id, "Unknown"),
+                away_team=team_lookup.get(game.away_team_id, "Unknown"),
+                home_score=game.home_score,
+                away_score=game.away_score,
+                game_date=str(game.game_date) if game.game_date else None,
+                status=game.status,
+                venue=game.venue,
+            )
             for game in games
         ],
-    }
+    )

@@ -1,18 +1,19 @@
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.team import Team
+from app.schemas import TeamResponse, PaginatedResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
 
-@router.get("")
+@router.get("", response_model=PaginatedResponse[TeamResponse])
 async def get_teams(
     conference: str | None = None,
     search: str | None = None,
@@ -41,39 +42,22 @@ async def get_teams(
     result = await db.execute(query)
     teams = result.scalars().all()
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "data": [
-            {
-                "id": team.id,
-                "name": team.name,
-                "abbreviation": team.abbreviation,
-                "conference": team.conference,
-                "league": team.league,
-            }
-            for team in teams
-        ],
-    }
+    return PaginatedResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        data=[TeamResponse.model_validate(team) for team in teams],
+    )
+   
 
 
-@router.get("/{team_id}")
+@router.get("/{team_id}", response_model=TeamResponse)
 async def get_team(team_id: int, db: AsyncSession = Depends(get_db)):
     """Get a single team by ID."""
     result = await db.execute(select(Team).where(Team.id == team_id))
     team = result.scalar_one_or_none()
 
     if not team:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Team not found")
 
-    return {
-        "id": team.id,
-        "name": team.name,
-        "abbreviation": team.abbreviation,
-        "conference": team.conference,
-        "league": team.league,
-        "source": team.source,
-        "external_id": team.external_id,
-    }
+    return TeamResponse.model_validate(team)
