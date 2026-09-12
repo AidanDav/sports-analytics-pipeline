@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.routes.health import router as health_router
 from app.api.routes.ingestion import router as ingestion_router
+from app.api.routes.teams import router as teams_router
+from app.api.routes.games import router as games_router
 
 # Converts the string "INFO" from .env into logging.INFO
 # Format gives timestamps, level, and which module the log came from
@@ -49,6 +51,8 @@ def create_app() -> FastAPI:
     # Register route groups. More include_router lines added as app grows.
     application.include_router(health_router)
     application.include_router(ingestion_router)
+    application.include_router(teams_router)
+    application.include_router(games_router)
 
     return application
 

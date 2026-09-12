@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -123,20 +123,27 @@ class CFBDIngestionService:
                 existing = result.scalar_one_or_none()
 
                 # Resolve team names to our internal IDs
-                # If the team isn't in our database yet, we skip rather
-                # than crash. This means teams should be ingested first.
-                home_team_id = team_lookup.get(raw.get("home_team"))
-                away_team_id = team_lookup.get(raw.get("away_team"))
+                # If the team isn't in our database yet, the ID will be None
+                home_team_id = team_lookup.get(raw.get("homeTeam"))
+                away_team_id = team_lookup.get(raw.get("awayTeam"))
+
+                # Determine game status from the completed flag
+                status = "final" if raw.get("completed") else "scheduled"
+
+                # Parse the date from the ISO timestamp
+                raw_date = raw.get("startDate")
+                game_date = date.fromisoformat(raw_date[:10]) if raw_date else None
 
                 if existing:
                     existing.season = raw.get("season", existing.season)
                     existing.week = raw.get("week", existing.week)
                     existing.home_team_id = home_team_id
                     existing.away_team_id = away_team_id
-                    existing.home_score = raw.get("home_points")
-                    existing.away_score = raw.get("away_points")
+                    existing.home_score = raw.get("homePoints")
+                    existing.away_score = raw.get("awayPoints")
+                    existing.game_date = game_date
                     existing.venue = raw.get("venue")
-                    existing.status = "final" if raw.get("home_points") is not None else "scheduled"
+                    existing.status = status
                     updated += 1
                 else:
                     game = Game(
@@ -147,10 +154,10 @@ class CFBDIngestionService:
                         week=raw.get("week"),
                         home_team_id=home_team_id,
                         away_team_id=away_team_id,
-                        home_score=raw.get("home_points"),
-                        away_score=raw.get("away_points"),
-                        game_date=raw.get("start_date", "")[:10] if raw.get("start_date") else None,
-                        status="final" if raw.get("home_points") is not None else "scheduled",
+                        home_score=raw.get("homePoints"),
+                        away_score=raw.get("awayPoints"),
+                        game_date=game_date,
+                        status=status,
                         venue=raw.get("venue"),
                     )
                     self.db.add(game)
