@@ -9,6 +9,8 @@ from app.api.routes.health import router as health_router
 from app.api.routes.ingestion import router as ingestion_router
 from app.api.routes.teams import router as teams_router
 from app.api.routes.games import router as games_router
+from app.api.routes.players import router as players_router
+from app.api.routes.player_stats import router as player_stats_router
 
 # Converts the string "INFO" from .env into logging.INFO
 # Format gives timestamps, level, and which module the log came from
@@ -53,6 +55,8 @@ def create_app() -> FastAPI:
     application.include_router(ingestion_router)
     application.include_router(teams_router)
     application.include_router(games_router)
+    application.include_router(players_router)
+    application.include_router(player_stats_router)
 
     return application
 

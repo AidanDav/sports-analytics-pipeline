@@ -137,6 +137,27 @@ class HighlightlyIngestionService:
         }
         return mapping.get(description, "scheduled")
 
+    def _infer_position(self, statistics: list[dict]) -> str | None:
+        """Infer a player's position from their stat groups.
+        
+        Highlightly box scores don't include position, but the stat
+        categories tell us what role a player filled in that game.
+        """
+        groups = {s.get("group", "").lower() for s in statistics}
+
+        if "passing" in groups:
+            return "QB"
+        if "rushing" in groups and "receiving" not in groups:
+            return "RB"
+        if "receiving" in groups:
+            return "WR"
+        if "defense" in groups:
+            return "DEF"
+        if "kicking" in groups or "punting" in groups:
+            return "K"
+        return None
+
+
     async def ingest_matches(self, season: int, league: str = "NFL") -> IngestionRun:
         """Fetch matches from Highlightly and upsert into the database.
         
@@ -395,6 +416,8 @@ class HighlightlyIngestionService:
                         )
                         player = result.scalar_one_or_none()
 
+                        inferred_position = self._infer_position(box.get("statistics", []))
+
                         if not player:
                             player = Player(
                                 source="highlightly",
@@ -403,6 +426,7 @@ class HighlightlyIngestionService:
                                 team_id=internal_team_id,
                                 first_name=first_name,
                                 last_name=last_name,
+                                position=inferred_position,
                                 number=player_raw.get("jersey"),
                             )
                             self.db.add(player)
@@ -411,17 +435,34 @@ class HighlightlyIngestionService:
                         else:
                             player.team_id = internal_team_id
                             player.number = player_raw.get("jersey", player.number)
-
-                        # Map and insert stats by category
+                            # Only update position if we inferred one and they don't have one yet
+                            if inferred_position and not player.position:
+                                player.position = inferred_position
+                     
+                        # Map and insert stats by category (skip if already exists)
                         stat_categories = self._map_stats(
                             box.get("statistics", [])
                         )
                         for cat_data in stat_categories.values():
+                            category = cat_data.pop("stat_category")
+                            # Check for existing stat line for this player/game/category
+                            existing_stat = await self.db.execute(
+                                select(PlayerStats).where(
+                                    PlayerStats.source == "highlightly",
+                                    PlayerStats.player_id == player.id,
+                                    PlayerStats.game_id == match.id,
+                                    PlayerStats.stat_category == category,
+                                )
+                            )
+                            if existing_stat.scalar_one_or_none():
+                                skipped += 1
+                                continue
+
                             stat = PlayerStats(
                                 source="highlightly",
                                 player_id=player.id,
                                 game_id=match.id,
-                                stat_category=cat_data.pop("stat_category"),
+                                stat_category=category,
                                 **cat_data,
                             )
                             self.db.add(stat)
