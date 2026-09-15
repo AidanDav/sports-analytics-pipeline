@@ -67,3 +67,29 @@ async def ingest_highlightly_matches(
         rows_updated=run.rows_updated,
         error=run.error_message,
     )
+
+@router.post("/cfbd/players", response_model=IngestionRunResponse)
+async def ingest_cfbd_players(year: int = 2024, db: AsyncSession = Depends(get_db)):
+    """Trigger CFBD player ingestion for a given year."""
+    service = CFBDIngestionService(db)
+    run = await service.ingest_players(year=year)
+    return IngestionRunResponse(
+        status=run.status,
+        rows_created=run.rows_created,
+        rows_updated=run.rows_updated,
+        error=run.error_message,
+    )
+
+@router.post("/highlightly/box-scores", response_model=IngestionRunResponse)
+async def ingest_highlightly_box_scores(
+    limit: int | None = 5, db: AsyncSession = Depends(get_db)
+):
+    """Trigger Highlightly box score ingestion. Limit caps API calls."""
+    service = HighlightlyIngestionService(db)
+    run = await service.ingest_box_scores(limit=limit)
+    return IngestionRunResponse(
+        status=run.status,
+        rows_created=run.rows_created,
+        rows_updated=run.rows_updated,
+        error=run.error_message,
+    )

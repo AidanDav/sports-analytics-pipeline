@@ -1,13 +1,16 @@
 import logging
 from datetime import datetime, timezone, date
+from pdb import run
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.team import Team
 from app.models.game import Game
+from app.models.player import Player
 from app.models.ingestion_run import IngestionRun
 from app.ingestion.cfbd_client import CFBDClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -180,5 +183,95 @@ class CFBDIngestionService:
             run.error_message = str(e)
             run.completed_at = datetime.now(timezone.utc)
             logger.error(f"CFBD game ingestion failed: {e}")
+
+        return run
+
+    async def ingest_players(self, year: int) -> IngestionRun:
+        """Fetch rosters from CFBD and upsert players into the database.
+    
+        CFBD doesn't have a bulk players endpoint, so we fetch
+        roster per team. We only pull teams we already have in our
+        database to avoid wasted API calls.
+        """
+        run = IngestionRun(
+        source="cfbd",
+        data_type="players",
+        status="running",
+        )
+        self.db.add(run)
+        await self.db.flush()
+
+        try:
+            # Get all CFBD teams so we can pull each roster
+            result = await self.db.execute(
+                select(Team).where(Team.source == "cfbd")
+            )
+            teams = result.scalars().all()
+            team_lookup = {team.name: team.id for team in teams}
+
+            created = 0
+            updated = 0
+            skipped = 0
+
+            for team in teams:
+                try:
+                    raw_players = await self.client.get_roster(
+                        team=team.name, year=year
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch roster for {team.name}: {e}"
+                    )
+                    skipped += 1
+                    continue
+
+                for raw in raw_players:
+                    external_id = str(raw["id"])
+                    result = await self.db.execute(
+                        select(Player).where(
+                            Player.source == "cfbd",
+                            Player.external_id == external_id
+                        )
+                    )
+                    existing = result.scalar_one_or_none()
+
+                    if existing:
+                        existing.first_name = raw.get("firstName", existing.first_name)
+                        existing.last_name = raw.get("lastName", existing.last_name)
+                        existing.position = raw.get("position", existing.position)
+                        existing.number = raw.get("jersey", existing.number)
+                        existing.team_id = team.id
+                        updated += 1
+                    else:
+                        player = Player(
+                            source="cfbd",
+                            external_id=external_id,
+                            league="cfb",
+                            team_id=team.id,
+                            first_name=raw.get("firstName"),
+                            last_name=raw.get("lastName", "Unknown"),
+                            position=raw.get("position"),
+                            number=raw.get("jersey"),
+                        )
+                        self.db.add(player)
+                        created += 1
+
+            await self.db.flush()
+            run.status = "success"
+            run.rows_created = created
+            run.rows_updated = updated
+            run.rows_skipped = skipped
+            run.completed_at = datetime.now(timezone.utc)
+
+            logger.info(
+                f"CFBD player ingestion for {year} complete: {created} created, "
+                f"{updated} updated, {skipped} skipped"
+            )
+
+        except Exception as e:
+            run.status = "failed"
+            run.error_message = str(e)
+            run.completed_at = datetime.now(timezone.utc)
+            logger.error(f"CFBD player ingestion failed: {e}")
 
         return run

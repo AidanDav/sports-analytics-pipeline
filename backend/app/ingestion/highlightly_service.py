@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.team import Team
 from app.models.game import Game
+from app.models.player import Player
+from app.models.player_stats import PlayerStats
 from app.models.ingestion_run import IngestionRun
 from app.ingestion.highlightly_client import HighlightlyClient
 
@@ -255,5 +257,194 @@ class HighlightlyIngestionService:
             run.error_message = str(e)
             run.completed_at = datetime.now(timezone.utc)
             logger.error(f"Highlightly match ingestion failed: {e}")
+
+        return run
+
+    def _split_name(self, full_name: str) -> tuple[str | None, str]:
+        """Split 'Hudson Card' into ('Hudson', 'Card').
+        
+        Highlightly gives a single fullName string. Our schema
+        stores first_name and last_name separately. We split on
+        the first space and treat everything after as last name
+        to handle names like 'Patrick Surtain II'.
+        """
+        parts = full_name.split(" ", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return None, parts[0]
+
+    def _map_stats(self, statistics: list[dict]) -> dict[str, dict]:
+        """Map Highlightly's verbose stat entries to our flat schema.
+        
+        Highlightly returns stats as a list like:
+            [{"group": "Passing", "name": "Total Passing Yards", "value": 273}, ...]
+        
+        We need to group by category and map to our column names:
+            {"passing": {"yards": 273, "completions": 24, "attempts": 25, ...}}
+        """
+        categories = {}
+
+        for stat in statistics:
+            group = stat.get("group", "").lower()
+            name = stat.get("name", "")
+            value = stat.get("value")
+
+            if value is None:
+                continue
+
+            # Initialize the category dict if needed
+            if group not in categories:
+                categories[group] = {"stat_category": group}
+
+            entry = categories[group]
+
+            # Map Highlightly stat names to our schema columns
+            mapping = {
+                "Total Passes": "attempts",
+                "Total Successful Passes": "completions",
+                "Total Passing Yards": "yards",
+                "Total Passing Touchdowns": "touchdowns",
+                "Total Passing Interceptions": "interceptions",
+                "Total Rushing Attempts": "carries",
+                "Total Rushing Yards": "yards",
+                "Total Rushing Touchdowns": "touchdowns",
+                "Total Receptions": "receptions",
+                "Total Receiving Yards": "yards",
+                "Total Receiving Touchdowns": "touchdowns",
+                "Total Receiving Targets": "targets",
+                "Total Fumbles": "fumbles",
+                "Total Defensive Tackles": "tackles",
+                "Total Defensive Sacks": "sacks",
+            }
+
+            column = mapping.get(name)
+            if column:
+                entry[column] = value
+
+        return categories
+
+    async def ingest_box_scores(self, limit: int | None = None) -> IngestionRun:
+        """Fetch box scores for Highlightly matches and upsert players + stats.
+        
+        This does double duty: creates Player records from the box score
+        player data, and creates PlayerStats records from their statistics.
+        The limit parameter caps how many matches to process, important
+        because each match is one API call and the free tier has daily limits.
+        """
+        run = IngestionRun(
+            source="highlightly",
+            data_type="players_and_stats",
+            status="running",
+        )
+        self.db.add(run)
+        await self.db.flush()
+
+        try:
+            # Get all Highlightly matches that have been played
+            result = await self.db.execute(
+                select(Game).where(
+                    Game.source == "highlightly",
+                    Game.status == "final",
+                )
+            )
+            matches = result.scalars().all()
+
+            if limit:
+                matches = matches[:limit]
+
+            # Build team lookup: external_id -> internal id
+            result = await self.db.execute(
+                select(Team).where(Team.source == "highlightly")
+            )
+            teams = result.scalars().all()
+            team_lookup = {team.external_id: team.id for team in teams}
+
+            players_created = 0
+            stats_created = 0
+            skipped = 0
+
+            for match in matches:
+                try:
+                    box_score = await self.client.get_box_score(
+                        match_id=int(match.external_id)
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch box score for match {match.external_id}: {e}"
+                    )
+                    skipped += 1
+                    continue
+
+                for team_data in box_score:
+                    team_info = team_data.get("team", {})
+                    team_ext_id = str(team_info.get("id", ""))
+                    internal_team_id = team_lookup.get(team_ext_id)
+
+                    for box in team_info.get("boxScores", []):
+                        player_raw = box.get("player", {})
+                        player_ext_id = str(player_raw.get("id", ""))
+                        full_name = player_raw.get("name", "Unknown")
+                        first_name, last_name = self._split_name(full_name)
+
+                        # Upsert the player
+                        result = await self.db.execute(
+                            select(Player).where(
+                                Player.source == "highlightly",
+                                Player.external_id == player_ext_id,
+                            )
+                        )
+                        player = result.scalar_one_or_none()
+
+                        if not player:
+                            player = Player(
+                                source="highlightly",
+                                external_id=player_ext_id,
+                                league="nfl",
+                                team_id=internal_team_id,
+                                first_name=first_name,
+                                last_name=last_name,
+                                number=player_raw.get("jersey"),
+                            )
+                            self.db.add(player)
+                            await self.db.flush()
+                            players_created += 1
+                        else:
+                            player.team_id = internal_team_id
+                            player.number = player_raw.get("jersey", player.number)
+
+                        # Map and insert stats by category
+                        stat_categories = self._map_stats(
+                            box.get("statistics", [])
+                        )
+                        for cat_data in stat_categories.values():
+                            stat = PlayerStats(
+                                source="highlightly",
+                                player_id=player.id,
+                                game_id=match.id,
+                                stat_category=cat_data.pop("stat_category"),
+                                **cat_data,
+                            )
+                            self.db.add(stat)
+                            stats_created += 1
+
+                await self.db.flush()
+
+            run.status = "success"
+            run.rows_created = players_created + stats_created
+            run.rows_updated = 0
+            run.rows_skipped = skipped
+            run.completed_at = datetime.now(timezone.utc)
+
+            logger.info(
+                f"Highlightly box score ingestion complete: "
+                f"{players_created} players created, "
+                f"{stats_created} stat rows created, {skipped} matches skipped"
+            )
+
+        except Exception as e:
+            run.status = "failed"
+            run.error_message = str(e)
+            run.completed_at = datetime.now(timezone.utc)
+            logger.error(f"Highlightly box score ingestion failed: {e}")
 
         return run

@@ -44,3 +44,10 @@ class CFBDClient:
         return await self._get(
             "/games", params={"year": year, "seasonType": season_type}
         )
+
+    async def get_roster(self, team: str, year: int) -> list[dict]:
+            """Fetch roster for a specific team and year."""
+            logger.info(f"Fetching {year} roster for {team} from CFBD")
+            return await self._get(
+                "/roster", params={"team": team, "year": year}
+            )
