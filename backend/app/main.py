@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.scheduler import configure_scheduler, scheduler
 from app.api.routes.health import router as health_router
 from app.api.routes.ingestion import router as ingestion_router
 from app.api.routes.teams import router as teams_router
@@ -12,6 +13,7 @@ from app.api.routes.games import router as games_router
 from app.api.routes.players import router as players_router
 from app.api.routes.player_stats import router as player_stats_router
 from app.api.routes.reports import router as reports_router
+from app.api.routes.scheduler import router as scheduler_router
 
 # Converts the string "INFO" from .env into logging.INFO
 # Format gives timestamps, level, and which module the log came from
@@ -28,8 +30,18 @@ logger = logging.getLogger(__name__)
 async def lifespan(application: FastAPI):
     # Startup
     logger.info("Sports Analytics Pipeline starting up")
+    # Only start the scheduler in non-test environments. During testing,
+    # we don't want background jobs firing and hitting real APIs.
+    if settings.app_env != "testing":
+        configure_scheduler()
+        scheduler.start()
+        logger.info("Scheduler started")
     yield
-    # Shutdown
+    # Shutdown -- stop the scheduler gracefully so in-progress jobs
+    # can finish rather than getting killed mid-transaction
+    if scheduler.running:
+        scheduler.shutdown(wait=True)
+        logger.info("Scheduler stopped")
     logger.info("Sports Analytics Pipeline shutting down")
 
 # Factory function pattern -- makes testing easier since you can create
@@ -59,7 +71,8 @@ def create_app() -> FastAPI:
     application.include_router(players_router)
     application.include_router(player_stats_router)
     application.include_router(reports_router)
-
+    application.include_router(scheduler_router)
+    
     return application
 
 app = create_app()
