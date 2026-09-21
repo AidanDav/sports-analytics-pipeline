@@ -34,18 +34,19 @@ HL_TEAMS = [
 
 HL_MATCHES = [
     {
-        "id": 5001, "season": 2024, "round": "Regular Season - 1",
+        "id": 5001, "season": 2024, "round": "regular-season",
         "date": "2024-09-06T00:15:00.000Z",
         "homeTeam": {"id": 1, "name": "Eagles"},
         "awayTeam": {"id": 2, "name": "Cowboys"},
         "state": {"description": "Finished", "score": {"current": "34 - 29"}},
     },
     {
-        "id": 5002, "season": 2024, "round": "Regular Season - 2",
+        "id": 5002, "season": 2024, "round": "regular-season",
         "date": "2024-09-13T00:15:00.000Z",
         "homeTeam": {"id": 2, "name": "Cowboys"},
         "awayTeam": {"id": 1, "name": "Eagles"},
-        "state": {"description": "Scheduled", "score": {"current": None}},
+        # Real Highlightly shape: unplayed games report "0 - 0", not null
+        "state": {"description": "Scheduled", "score": {"current": "0 - 0"}},
     },
 ]
 
@@ -245,7 +246,7 @@ async def test_ingest_matches_parses_nested_payload(service, db_session):
     assert game.away_team_id == teams["2"]
     assert (game.home_score, game.away_score) == (34, 29)
     assert game.status == "final"
-    assert game.week == 1                      # "Regular Season - 1"
+    assert game.week == 1                      # derived from date
     assert game.game_date == date(2024, 9, 6)
     assert game.league == "nfl"
 
@@ -275,6 +276,111 @@ async def test_ingest_matches_null_state_does_not_fail_run(service, db_session):
 
     assert run.status == "success"
     assert run.rows_created == 2
+
+
+# --- Week derivation ---
+# Real 2024 NFL calendar: Week 1 opened Thu Sep 5 (stored as Fri Sep 6 UTC),
+# so the anchor is Wed Sep 4.
+
+def _m(round_str, iso):
+    return {"round": round_str, "date": iso}
+
+
+def test_season_anchor_is_wednesday_before_opener(helpers):
+    matches = [
+        _m("preseason", "2024-08-09T23:00:00.000Z"),    # ignored
+        _m("regular-season", "2024-09-06T00:20:00.000Z"),
+        _m("regular-season", "2024-09-08T17:00:00.000Z"),
+    ]
+    assert helpers._season_anchor(matches) == date(2024, 9, 4)
+
+
+def test_season_anchor_none_without_regular_season(helpers):
+    assert helpers._season_anchor([_m("preseason", "2024-08-09T23:00:00.000Z")]) is None
+    assert helpers._season_anchor([]) is None
+
+
+@pytest.mark.parametrize("iso, expected_week", [
+    ("2024-09-06T00:20:00.000Z", 1),   # Thu night opener, stored as Fri UTC
+    ("2024-09-08T17:00:00.000Z", 1),   # Sunday
+    ("2024-09-10T00:15:00.000Z", 1),   # Monday Night Football, stored as Tue UTC
+    ("2024-09-12T00:15:00.000Z", 2),   # next Thursday night
+    ("2024-12-25T18:00:00.000Z", 17),  # Christmas (Wed) was Week 17
+    ("2025-01-05T18:00:00.000Z", 18),  # final Sunday
+])
+def test_week_number_nfl_edge_cases(helpers, iso, expected_week):
+    anchor = date(2024, 9, 4)
+    game_date = helpers._parse_date(iso)
+    assert helpers._week_number("regular-season", game_date, anchor) == expected_week
+
+
+def test_week_number_none_for_preseason_and_missing_data(helpers):
+    anchor = date(2024, 9, 4)
+    d = date(2024, 9, 8)
+    assert helpers._week_number("preseason", d, anchor) is None
+    assert helpers._week_number("regular-season", None, anchor) is None
+    assert helpers._week_number("regular-season", d, None) is None
+    # A date before the anchor shouldn't produce week 0 or negative
+    assert helpers._week_number("regular-season", date(2024, 9, 1), anchor) is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("2026-10-23T00:15:00.000Z", date(2026, 10, 23)),
+    (None, None),
+    ("", None),
+    ("not a date", None),
+])
+def test_parse_date(helpers, raw, expected):
+    assert helpers._parse_date(raw) == expected
+
+
+@pytest.mark.asyncio
+async def test_ingest_matches_preseason_has_no_week(service, db_session):
+    await service.ingest_teams()
+    preseason = {**HL_MATCHES[0], "id": 4001, "round": "preseason",
+                 "date": "2024-08-09T23:00:00.000Z"}
+    service.client.get_matches.return_value = [preseason, *HL_MATCHES]
+
+    await service.ingest_matches(season=2024)
+
+    games = {g.external_id: g for g in await _all(db_session, Game)}
+    assert games["4001"].week is None
+    # Preseason must not become the anchor and shift regular-season weeks
+    assert games["5001"].week == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_matches_final_zero_zero_is_kept(service, db_session):
+    """Only unplayed games lose their score. A finished 0-0 is a real result."""
+    await service.ingest_teams()
+    shutout = {**HL_MATCHES[0], "state": {"description": "Finished",
+                                         "score": {"current": "0 - 0"}}}
+    service.client.get_matches.return_value = [shutout]
+
+    await service.ingest_matches(season=2024)
+
+    game = (await _all(db_session, Game))[0]
+    assert (game.home_score, game.away_score) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_ingest_matches_rerun_backfills_week_and_clears_fake_score(service, db_session):
+    """Re-ingesting corrects rows written by the old code: null week, 0-0."""
+    await service.ingest_teams()
+    db_session.add(Game(
+        source="highlightly", external_id="5002", league="nfl", season=2024,
+        week=None, home_score=0, away_score=0, status="scheduled",
+    ))
+    await db_session.commit()
+
+    run = await service.ingest_matches(season=2024)
+
+    assert run.rows_updated == 1
+    game = (await db_session.execute(
+        select(Game).where(Game.external_id == "5002")
+    )).scalar_one()
+    assert game.week == 2
+    assert game.home_score is None
 
 
 @pytest.mark.asyncio

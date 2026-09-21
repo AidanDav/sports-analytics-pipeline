@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,6 +143,60 @@ class HighlightlyIngestionService:
         }
         return mapping.get(description, "scheduled")
 
+    # Statuses where the game hasn't kicked off. Highlightly sends "0 - 0"
+    # for these, which would otherwise be stored as a real 0-0 score.
+    UNPLAYED_STATUSES = {"scheduled", "postponed", "cancelled"}
+
+    @staticmethod
+    def _parse_date(raw_date: str | None) -> date | None:
+        """Parse the UTC date portion of an ISO timestamp like '2026-10-23T00:15:00.000Z'."""
+        if not raw_date:
+            return None
+        try:
+            return date.fromisoformat(raw_date[:10])
+        except ValueError:
+            return None
+ 
+    @staticmethod
+    def _season_anchor(raw_matches: list[dict]) -> date | None:
+        """Find the Wednesday that starts Week 1 of the regular season.
+ 
+        Highlightly's round field is just "preseason" or "regular-season"
+        with no week number, so weeks are derived from dates. The anchor
+        comes from the data itself (earliest regular-season game), so
+        nothing is hardcoded per season.
+ 
+        Why Wednesday: dates are UTC, so Monday Night Football (8:15 PM ET)
+        is stored as Tuesday. A Tuesday boundary would push every MNF game
+        into the following week. No regular NFL week starts on a Wednesday
+        in UTC, and the occasional Wednesday game (Christmas 2024) belongs
+        to the week it opens, which a Wednesday boundary also gets right.
+        """
+        dates = [
+            HighlightlyIngestionService._parse_date(m.get("date"))
+            for m in raw_matches
+            if m.get("round") == "regular-season"
+        ]
+        dates = [d for d in dates if d]
+        if not dates:
+            return None
+        first = min(dates)
+        # weekday(): Monday=0 ... Wednesday=2. Step back to the Wednesday
+        # on or before the first game.
+        return first - timedelta(days=(first.weekday() - 2) % 7)
+ 
+    @staticmethod
+    def _week_number(
+        round_str: str | None, game_date: date | None, anchor: date | None
+    ) -> int | None:
+        """Week number for a regular-season game, None for anything else."""
+        if round_str != "regular-season" or not game_date or not anchor:
+            return None
+        days = (game_date - anchor).days
+        if days < 0:
+            return None
+        return days // 7 + 1
+
     def _infer_position(self, statistics: list[dict]) -> str | None:
         """Infer a player's position from their stat groups.
         
@@ -186,6 +240,8 @@ class HighlightlyIngestionService:
         try:
             # Matches endpoint returns paginated: {"data": [...], "pagination": {...}}
             raw_matches = await self.client.get_matches(season=season, league=league)
+            # Computed once from the full season payload, used for every match
+            anchor = self._season_anchor(raw_matches)
             created = 0
             updated = 0
             skipped = 0
@@ -223,24 +279,13 @@ class HighlightlyIngestionService:
                 # Map Highlightly status to our internal status
                 status = self._map_status(state.get("description"))
 
-                # Parse ISO date from the match
-                raw_date = raw.get("date")
-                game_date = None
-                if raw_date:
-                    try:
-                        game_date = date.fromisoformat(raw_date[:10])
-                    except ValueError:
-                        pass
+                # Unplayed games come back as "0 - 0". Store no score rather
+                # than a fake 0-0 result.
+                if status in self.UNPLAYED_STATUSES:
+                    home_score, away_score = None, None
 
-                # Parse round string to extract week number if possible
-                # Highlightly uses "Regular Season - 5" format
-                round_str = raw.get("round", "")
-                week = None
-                if " - " in round_str:
-                    try:
-                        week = int(round_str.split(" - ")[1])
-                    except (ValueError, IndexError):
-                        pass
+                game_date = self._parse_date(raw.get("date"))
+                week = self._week_number(raw.get("round"), game_date, anchor)
 
                 if existing:
                     existing.season = raw.get("season", existing.season)
