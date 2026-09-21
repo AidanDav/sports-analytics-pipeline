@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime, timezone, date
-from pdb import run
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -207,7 +206,6 @@ class CFBDIngestionService:
                 select(Team).where(Team.source == "cfbd")
             )
             teams = result.scalars().all()
-            team_lookup = {team.name: team.id for team in teams}
 
             created = 0
             updated = 0

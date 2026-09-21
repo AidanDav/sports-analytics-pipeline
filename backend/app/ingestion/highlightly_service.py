@@ -109,7 +109,13 @@ class HighlightlyIngestionService:
         This is a key normalization step. CFBD gives us homePoints and
         awayPoints as integers. Highlightly gives us a single string
         like '21 - 7' that we need to split and convert.
+
+        Unplayed games can come back with a null score, so None is
+        handled explicitly instead of letting .split() raise and take
+        down the whole ingestion run.
         """
+        if not score_string:
+            return None, None
         try:
             parts = score_string.split(" - ")
             return int(parts[0]), int(parts[1])
@@ -208,8 +214,10 @@ class HighlightlyIngestionService:
                 away_team_id = team_lookup.get(away_ext_id)
 
                 # Parse the score string into integers
-                state = raw.get("state", {})
-                score_str = state.get("score", {}).get("current", "")
+                # `or {}` rather than a .get default: the default only applies
+                # when the key is missing, not when the API sends null
+                state = raw.get("state") or {}
+                score_str = (state.get("score") or {}).get("current")
                 home_score, away_score = self._parse_score(score_str)
 
                 # Map Highlightly status to our internal status
