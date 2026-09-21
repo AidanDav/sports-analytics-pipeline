@@ -13,7 +13,7 @@ import type {
 
 // In dev, Vite proxies /api -> backend:8000 (see vite.config.ts).
 // In production, the env var points to the real API URL.
-const BASE = import.meta.env.VITE_API_URL || "/api";
+const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 async function fetchJSON<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${BASE}${path}`, window.location.origin);

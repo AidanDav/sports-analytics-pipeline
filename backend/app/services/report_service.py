@@ -222,7 +222,7 @@ Write in markdown format. Do not invent stats that are not in the data above."""
             )
 
             # Step 4: Store the result
-            report.content = message.content[0].text
+            report.content = message.content[0].text or "Report generation returned empty content."
             report.status = "complete"
 
             logger.info(f"Report generated for {season} Week {week}")
