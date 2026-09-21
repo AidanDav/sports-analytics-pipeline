@@ -39,6 +39,25 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    # Mount local source so Vite hot-reloads on every save,
+    # but use a named volume for node_modules so the container's
+    # npm ci install isn't overwritten by the host mount.
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    # The frontend only needs the backend running to proxy API calls.
+    # No database dependency -- the Vite proxy in vite.config.ts
+    # forwards /api requests to http://backend:8000.
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
+  frontend_node_modules:
