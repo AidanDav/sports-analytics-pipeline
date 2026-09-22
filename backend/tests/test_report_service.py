@@ -229,3 +229,111 @@ async def test_get_report_by_id_and_404(client, db_session):
     assert found.status_code == 200
     assert found.json()["title"] == "W1"
     assert missing.status_code == 404
+
+# --- Conference-scoped reports ---
+
+async def _seed_cfb_week(db_session):
+    """2024 CFB Week 5: one final SEC game, one final Big Ten game."""
+    bama = Team(source="cfbd", external_id="c1", league="cfb", name="Alabama", conference="SEC")
+    uga = Team(source="cfbd", external_id="c2", league="cfb", name="Georgia", conference="SEC")
+    osu = Team(source="cfbd", external_id="c3", league="cfb", name="Ohio State", conference="Big Ten")
+    msu = Team(source="cfbd", external_id="c4", league="cfb", name="Michigan State", conference="Big Ten")
+    db_session.add_all([bama, uga, osu, msu])
+    await db_session.commit()
+
+    db_session.add_all([
+        Game(source="cfbd", external_id="c100", league="cfb", season=2024, week=5,
+             home_team_id=bama.id, away_team_id=uga.id,
+             home_score=41, away_score=34, status="final",
+             venue="Bryant-Denny Stadium"),
+        Game(source="cfbd", external_id="c101", league="cfb", season=2024, week=5,
+             home_team_id=osu.id, away_team_id=msu.id,
+             home_score=38, away_score=7, status="final",
+             venue="Ohio Stadium"),
+    ])
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_conference_report_scopes_games_and_title(db_session, mock_claude):
+    await _seed_cfb_week(db_session)
+    service = ReportService(db_session)
+
+    report = await service.generate_weekly_report(
+        season=2024, week=5, league="cfb", conference="SEC"
+    )
+    prompt = _sent_prompt(mock_claude)
+
+    assert report.status == "complete"
+    assert report.title == "2024 SEC - Week 5 Summary"
+    # Scope label and selection rule both reach Claude
+    assert "2024 SEC College Football Season, Week 5" in prompt
+    assert "games involving SEC teams" in prompt
+    # Only the SEC game is in the data
+    assert "Georgia 34 at Alabama 41" in prompt
+    assert "Ohio State" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_unscoped_cfb_report_has_no_conference_note(db_session, mock_claude):
+    """Without a conference, the prompt and title keep the original format."""
+    await _seed_cfb_week(db_session)
+    service = ReportService(db_session)
+
+    report = await service.generate_weekly_report(season=2024, week=5, league="cfb")
+    prompt = _sent_prompt(mock_claude)
+
+    assert report.title == "2024 College Football Season - Week 5 Summary"
+    assert "games involving" not in prompt
+    assert "Alabama" in prompt and "Ohio State" in prompt
+
+
+@pytest.mark.asyncio
+async def test_conference_with_no_games_skips_claude(db_session, mock_claude):
+    """A valid conference with no games that week fails without spending tokens."""
+    await _seed_cfb_week(db_session)
+    service = ReportService(db_session)
+
+    report = await service.generate_weekly_report(
+        season=2024, week=5, league="cfb", conference="ACC"
+    )
+
+    assert report.status == "failed"
+    mock_claude.messages.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_passes_conference(client, db_session, mock_claude):
+    await _seed_cfb_week(db_session)
+
+    response = await client.post(
+        "/reports/generate/weekly",
+        params={"season": 2024, "week": 5, "league": "cfb", "conference": "Power 4"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "2024 Power 4 - Week 5 Summary"
+    prompt = _sent_prompt(mock_claude)
+    # Preset expands, so both conferences' games are included
+    assert "Alabama" in prompt and "Ohio State" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("league, conference, detail", [
+    ("nfl", "SEC", "only supported for league=cfb"),
+    ("cfb", "Big 10", "Unknown conference"),
+])
+async def test_generate_endpoint_rejects_bad_conference(
+    client, db_session, mock_claude, league, conference, detail
+):
+    """Bad input gets a 400 before any Report row is created or tokens spent."""
+    response = await client.post(
+        "/reports/generate/weekly",
+        params={"season": 2024, "week": 5, "league": league, "conference": conference},
+    )
+
+    assert response.status_code == 400
+    assert detail in response.json()["detail"]
+    mock_claude.messages.create.assert_not_called()
+    rows = (await db_session.execute(select(Report))).scalars().all()
+    assert rows == []

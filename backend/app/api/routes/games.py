@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.game import Game
 from app.models.team import Team
 from app.schemas import GameResponse, PaginatedResponse
+from app.services.conferences import game_in_conference
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,8 @@ async def get_games(
     season: int | None = None,
     week: int | None = None,
     team_id: int | None = None,
+    league: str | None = None,
+    conference: str | None = None,
     limit: int = Query(default=25, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -30,11 +33,18 @@ async def get_games(
         query = query.where(Game.season == season)
     if week:
         query = query.where(Game.week == week)
+    if league:
+        query = query.where(Game.league == league)
     if team_id:
         # A team can be home or away, so check both
         query = query.where(
             (Game.home_team_id == team_id) | (Game.away_team_id == team_id)
         )
+    if conference:
+        # Any game involving a team from the conference (or preset).
+        # Only CFB teams have conferences, so this naturally returns
+        # no NFL games.
+        query = query.where(game_in_conference(conference))
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar()

@@ -112,3 +112,105 @@ async def test_get_games_filter_by_team(client, db_session):
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 2
+
+async def _seed_conference_games(db_session):
+    """Five CFB games covering each conference case, plus one NFL game.
+
+    1. SEC team at home vs G5         -> matches SEC via home side
+    2. Big Ten team on the road at FCS -> matches Big Ten via away side
+    3. Big 12 vs G5                   -> Power 4 only through one team
+    4. G5 vs FCS                      -> FBS, but not Power 4
+    5. FCS vs FCS                     -> matches nothing
+    6. NFL game                       -> no conferences at all
+    """
+    def team(ext_id, name, conference=None, league="cfb", source="cfbd"):
+        return Team(source=source, external_id=ext_id, league=league,
+                    name=name, conference=conference)
+
+    bama = team("1", "Alabama", "SEC")
+    osu = team("2", "Ohio State", "Big Ten")
+    okst = team("3", "Oklahoma State", "Big 12")
+    tulane = team("4", "Tulane", "American Athletic")
+    ndsu = team("5", "North Dakota State", "MVFC")
+    montana = team("6", "Montana", "Big Sky")
+    eagles = team("10", "Philadelphia Eagles", league="nfl", source="highlightly")
+    cowboys = team("11", "Dallas Cowboys", league="nfl", source="highlightly")
+    db_session.add_all([bama, osu, okst, tulane, ndsu, montana, eagles, cowboys])
+    await db_session.commit()
+
+    def game(ext_id, home, away, league="cfb", source="cfbd"):
+        return Game(source=source, external_id=ext_id, league=league,
+                    season=2024, week=1,
+                    home_team_id=home.id, away_team_id=away.id)
+
+    db_session.add_all([
+        game("1", bama, tulane),
+        game("2", ndsu, osu),
+        game("3", okst, tulane),
+        game("4", tulane, ndsu),
+        game("5", montana, ndsu),
+        game("6", eagles, cowboys, league="nfl", source="highlightly"),
+    ])
+    await db_session.commit()
+
+
+def _matchups(response):
+    """Set of (away, home) pairs, so assertions don't depend on sort order."""
+    return {(g["away_team"], g["home_team"]) for g in response.json()["data"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("league, expected_total", [
+    ("cfb", 5),
+    ("nfl", 1),
+])
+async def test_get_games_filter_by_league(client, db_session, league, expected_total):
+    await _seed_conference_games(db_session)
+
+    response = await client.get(f"/games?league={league}")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == expected_total
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conference, expected", [
+    # Home side match
+    ("SEC", {("Tulane", "Alabama")}),
+    # Away side match, the case a home-only filter would miss
+    ("Big Ten", {("Ohio State", "North Dakota State")}),
+    # Preset expands to all four P4 conferences
+    ("Power 4", {
+        ("Tulane", "Alabama"),
+        ("Ohio State", "North Dakota State"),
+        ("Tulane", "Oklahoma State"),
+    }),
+    # FBS includes G5 vs FCS, excludes FCS vs FCS and the NFL game
+    ("All FBS", {
+        ("Tulane", "Alabama"),
+        ("Ohio State", "North Dakota State"),
+        ("Tulane", "Oklahoma State"),
+        ("North Dakota State", "Tulane"),
+    }),
+])
+async def test_get_games_filter_by_conference(client, db_session, conference, expected):
+    await _seed_conference_games(db_session)
+
+    response = await client.get("/games", params={"conference": conference, "limit": 100})
+
+    assert response.status_code == 200
+    assert _matchups(response) == expected
+    # total comes from the same filtered query, so pagination stays correct
+    assert response.json()["total"] == len(expected)
+
+
+@pytest.mark.asyncio
+async def test_get_games_unknown_conference_returns_nothing(client, db_session):
+    """The games route doesn't validate conference names (the reports
+    route does), so a typo just returns an empty list, not an error."""
+    await _seed_conference_games(db_session)
+
+    response = await client.get("/games", params={"conference": "Big 10"})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0

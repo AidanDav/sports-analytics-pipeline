@@ -11,6 +11,7 @@ from app.models.team import Team
 from app.models.player import Player
 from app.models.player_stats import PlayerStats
 from app.models.report import Report
+from app.services.conferences import game_in_conference
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +25,20 @@ class ReportService:
         self.db = db
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    async def _gather_week_data(self, season: int, week: int, league: str = "nfl") -> dict:
+    async def _gather_week_data(self, season: int, week: int, league: str = "nfl", conference: str | None = None) -> dict:
         """Pull all relevant data for a given week to feed into the prompt."""
 
         # Get all games for this week
-        result = await self.db.execute(
-            select(Game).where(
-                Game.season == season,
-                Game.week == week,
-                Game.status == "final",
-                Game.league == league
-            )
+        
+        query = select(Game).where(
+            Game.season == season,
+            Game.week == week,
+            Game.status == "final",
+            Game.league == league
         )
+        if conference:
+            query = query.where(game_in_conference(conference))
+        result = await self.db.execute(query)
         games = result.scalars().all()
 
         if not games:
@@ -130,9 +133,10 @@ class ReportService:
 
         return performers
 
-    def _build_prompt(self, season: int, week: int, data: dict, league: str = "nfl") -> str:
+    def _build_prompt(self, season: int, week: int, data: dict, league: str = "nfl", conference: str | None = None) -> str:
         """Build a structured prompt from the gathered data."""
         league_name = "NFL" if league == "nfl" else "College Football"
+        scope = f"{conference} {league_name}" if conference else league_name
         games_text = ""
         for g in data["games"]:
             games_text += (
@@ -157,10 +161,14 @@ class ReportService:
                     line += f", {p['receptions']} rec, {p['touchdowns']} TD"
                 lines += line + "\n"
             return lines
-
+        conference_note = (
+            f"\nThese are all games involving {conference} teams, including "
+            f"non-conference matchups. Frame the report around {conference} teams.\n"
+            if conference else ""
+        )
         prompt = f"""You are a sports analytics writer. Generate a weekly analytical report
-for the {season} {league_name} Season, Week {week}.
-
+for the {season} {scope} Season, Week {week}.
+{conference_note}
 Here is the data from this week's games:
 
 SCORES:
@@ -182,13 +190,18 @@ Write in markdown format. Do not invent stats that are not in the data above."""
 
         return prompt
 
-    async def generate_weekly_report(self, season: int, week: int, league: str = "nfl") -> Report:
+    async def generate_weekly_report(self, season: int, week: int, league: str = "nfl", conference: str | None = None) -> Report:
         """Generate a weekly summary report for a given season and week."""
         league_name = "NFL" if league == "nfl" else "College Football"
+        if conference:
+            title = f"{season} {conference} - Week {week} Summary"
+        else:
+            title = f"{season} {league_name} Season - Week {week} Summary"
+
         # Create the report record in "generating" state
         report = Report(
             report_type="weekly_summary",
-            title=f"{season} {league_name} Season - Week {week} Summary",
+            title=title,
             content="",
             prompt_used="",
             model=MODEL,
@@ -201,7 +214,7 @@ Write in markdown format. Do not invent stats that are not in the data above."""
 
         try:
             # Step 1: Gather data from our database
-            data = await self._gather_week_data(season, week, league)
+            data = await self._gather_week_data(season, week, league, conference)
 
             if not data["games"]:
                 report.status = "failed"
@@ -210,7 +223,7 @@ Write in markdown format. Do not invent stats that are not in the data above."""
                 return report
 
             # Step 2: Build the prompt
-            prompt = self._build_prompt(season, week, data, league)
+            prompt = self._build_prompt(season, week, data, league, conference)
             report.prompt_used = prompt
 
             # Step 3: Call Claude

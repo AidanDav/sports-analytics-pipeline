@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.team import Team
 from app.schemas import TeamResponse, PaginatedResponse
+from app.services.conferences import conference_options
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,15 @@ async def get_teams(
         data=[TeamResponse.model_validate(team) for team in teams],
     )
    
+@router.get("/conferences", response_model=list[str])
+async def get_conferences():
+    """Conference filter options for the frontend dropdowns.
 
+    Returns presets first ("Power 4", "All FBS"), then each FBS
+    conference. Served from the backend so the UI never hardcodes
+    conference names that could drift from what the filters match.
+    """
+    return conference_options()
 
 @router.get("/{team_id}", response_model=TeamResponse)
 async def get_team(team_id: int, db: AsyncSession = Depends(get_db)):

@@ -123,3 +123,21 @@ async def test_get_team_not_found(client):
     """Should return 404 for a team ID that doesn't exist."""
     response = await client.get("/teams/99999")
     assert response.status_code == 404
+
+@pytest.mark.asyncio
+async def test_get_conferences(client):
+    """Conference options come from the backend, presets first.
+
+    Also guards route order: if /teams/{team_id} were declared first,
+    "conferences" would be parsed as a team ID and this would be a 422.
+    """
+    response = await client.get("/teams/conferences")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data[:2] == ["Power 4", "All FBS"]
+    # Exact CFBD spellings, since the filter is an exact match
+    assert "Big Ten" in data
+    assert "American Athletic" in data
+    assert "FBS Independents" in data
+    assert "Big 10" not in data

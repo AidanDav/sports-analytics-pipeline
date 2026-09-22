@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.report import Report
 from app.schemas import ReportResponse, PaginatedResponse
 from app.services.report_service import ReportService
+from app.services.conferences import conference_options
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +20,32 @@ async def generate_weekly_report(
     season: int = 2024,
     week: int = 1,
     league: str = "nfl",
+    conference: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a weekly analytical report using Claude."""
+    """Generate a weekly analytical report using Claude.
+
+    conference is optional and CFB-only. Pass a single conference
+    ("SEC") or a preset ("Power 4", "All FBS").
+    """
+    if conference:
+        # NFL teams have no conference in the data, so this would
+        # just produce an empty, failed report. Reject it up front.
+        if league != "cfb":
+            raise HTTPException(
+                status_code=400,
+                detail="Conference filter is only supported for league=cfb",
+            )
+        # Catches typos like "Big 10" before they create a failed report row
+        if conference not in conference_options():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown conference '{conference}'",
+            )
+
     service = ReportService(db)
     report = await service.generate_weekly_report(
-        season=season, week=week, league=league
+        season=season, week=week, league=league, conference=conference
     )
     return ReportResponse.model_validate(report)
 
