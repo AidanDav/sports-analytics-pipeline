@@ -52,12 +52,17 @@ export function getTeam(id: number) {
   return fetchJSON<Team>(`/teams/${id}`);
 }
 
+export function getConferences() {
+  return fetchJSON<string[]>("/teams/conferences");
+}
 // --- Games ---
 
 export function getGames(params?: {
   season?: number;
   week?: number;
   team_id?: number;
+  league?: string;
+  conference?: string;
   limit?: number;
   offset?: number;
 }) {
@@ -65,6 +70,8 @@ export function getGames(params?: {
     season: params?.season ? String(params.season) : "",
     week: params?.week ? String(params.week) : "",
     team_id: params?.team_id ? String(params.team_id) : "",
+    league: params?.league || "",
+    conference: params?.conference || "",
     limit: String(params?.limit ?? 25),
     offset: String(params?.offset ?? 0),
   });
@@ -141,12 +148,25 @@ export function getReport(id: number) {
 export async function generateReport(
   season: number,
   week: number,
-  league = "nfl"
+  league = "nfl",
+  conference?: string
 ): Promise<Report> {
-  const url = `${BASE}/reports/generate/weekly?season=${season}&week=${week}&league=${league}`;
-  const response = await fetch(url, { method: "POST" });
+  // URLSearchParams handles encoding, so "Power 4" becomes "Power+4"
+  // instead of breaking the URL with a raw space
+  const params = new URLSearchParams({
+    season: String(season),
+    week: String(week),
+    league,
+  });
+  if (conference) params.set("conference", conference);
+
+  const response = await fetch(`${BASE}/reports/generate/weekly?${params}`, {
+    method: "POST",
+  });
   if (!response.ok) {
-    throw new Error(`API error: ${response.status} ${response.statusText}`);
+    // Surface the backend's 400 message instead of a generic status line
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `API error: ${response.status} ${response.statusText}`);
   }
   return response.json();
 }

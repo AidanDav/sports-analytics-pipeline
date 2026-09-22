@@ -6,17 +6,13 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    //Listen on all interfaces so docker can forward the port
+    // Listen on all interfaces so Docker can forward the port
     host: "0.0.0.0",
     port: 5173,
-    // Proxy API calls to the backend container so the browser
-    // never deals with CORS during local development
-    proxy: {
-      '/api': {
-        target: 'http://backend:8080',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
-      },
+    // Docker on Windows doesn't forward file change events into the
+    // container, so poll instead or HMR silently stops working
+    watch: {
+      usePolling: true,
     },
   },
 })

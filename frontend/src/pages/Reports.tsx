@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getReports, generateReport } from "../api/client";
+import { getReports, generateReport, getConferences } from "../api/client";
 import type { Report } from "../api/types";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
@@ -59,6 +59,9 @@ export default function Reports() {
   const [genSeason, setGenSeason] = useState(2024);
   const [genWeek, setGenWeek] = useState(1);
   const [genLeague, setGenLeague] = useState("nfl");
+  const [genConference, setGenConference] = useState("");
+  const [conferences, setConferences] = useState<string[]>([]);
+  const [genError, setGenError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
   const limit = 25;
@@ -80,16 +83,33 @@ export default function Reports() {
     load();
   }, [load]);
 
-  async function handleGenerate() {
+    useEffect(() => {
+    getConferences()
+      .then(setConferences)
+      .catch((err) => console.error("Failed to load conferences:", err));
+  }, []);
+
+    async function handleGenerate() {
     setGenerating(true);
+    setGenError(null);
     try {
-      await generateReport(genSeason, genWeek, genLeague);
-      setShowForm(false);
-      // Reload the list to show the new report
+      const report = await generateReport(
+        genSeason,
+        genWeek,
+        genLeague,
+        genConference || undefined
+      );
+      // A "failed" report is still a 200, e.g. no games that week.
+      // Show why instead of quietly adding a red row to the table.
+      if (report.status === "failed") {
+        setGenError(report.content);
+      } else {
+        setShowForm(false);
+      }
       load();
     } catch (err) {
-      console.error("Report generation failed:", err);
-      alert("Report generation failed. Check the console for details.");
+      // 400s from the route land here with the backend's message
+      setGenError(err instanceof Error ? err.message : "Report generation failed");
     } finally {
       setGenerating(false);
     }
@@ -143,11 +163,28 @@ export default function Reports() {
               <label className="block text-xs text-slate-500 mb-1">League</label>
               <select
                 value={genLeague}
-                onChange={(e) => setGenLeague(e.target.value)}
+                onChange={(e) => {setGenLeague(e.target.value);
+                  if (e.target.value !== "cfb") setGenConference("");
+                }}
                 className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
               >
                 <option value="nfl">NFL</option>
                 <option value="cfb">College Football</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Conference</label>
+              <select
+                value={genConference}
+                onChange={(e) => setGenConference(e.target.value)}
+                disabled={genLeague !== "cfb"}
+                title={genLeague !== "cfb" ? "Select College Football to scope by conference" : undefined}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white disabled:bg-slate-100 disabled:text-slate-400"
+              >
+                <option value="">All Games</option>
+                {conferences.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
               </select>
             </div>
             <button
@@ -158,6 +195,9 @@ export default function Reports() {
               {generating ? "Generating..." : "Generate"}
             </button>
           </div>
+           {genError && (
+            <p className="mt-3 text-sm text-red-600">{genError}</p>
+          )}
         </div>
       )}
 
