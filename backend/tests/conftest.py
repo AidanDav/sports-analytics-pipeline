@@ -38,6 +38,12 @@ def _ensure_test_db_exists():
 
 _ensure_test_db_exists()
 
+# create_all never alters existing tables, so a new model column would
+# be missing from a test database built before it was added. Dropping
+# and recreating once per test run keeps the schema in sync with the
+# models without paying that cost on every test.
+_schema_ready = False
+
 
 @pytest.fixture()
 async def db_session():
@@ -50,8 +56,12 @@ async def db_session():
     engine = create_async_engine(TEST_DB_URL, echo=False)
 
     # Create tables if they don't exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    global _schema_ready
+    if not _schema_ready:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        _schema_ready = True
 
     # Truncate before each test
     async with engine.begin() as conn:

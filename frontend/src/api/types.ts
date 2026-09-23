@@ -20,6 +20,8 @@ export interface Game {
   id: number;
   season: number;
   week: number | null;
+  home_team_id: number | null;
+  away_team_id: number | null;
   home_team: string;
   away_team: string;
   home_score: number | null;
@@ -56,6 +58,13 @@ export interface PlayerStats {
   fumbles: number | null;
   tackles: number | null;
   sacks: number | null;
+}
+
+// Mirrors GameStatLineResponse: a stat line with the player resolved
+export interface GameStatLine extends PlayerStats {
+  player_name: string;
+  position: string | null;
+  team_id: number | null;
 }
 
 export interface Report {

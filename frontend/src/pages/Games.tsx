@@ -3,6 +3,7 @@ import { getGames, getConferences } from "../api/client";
 import type { Game } from "../api/types";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
+import TeamLink from "../components/TeamLink";
 
 const COLUMNS: Column<Game>[] = [
   {
@@ -13,10 +14,10 @@ const COLUMNS: Column<Game>[] = [
   {
     header: "Matchup",
     accessor: (g) => (
-      <span>
-        <span className="font-medium">{g.away_team}</span>
+      <span className="whitespace-nowrap">
+        <TeamLink id={g.away_team_id} name={g.away_team} />
         <span className="text-slate-400 mx-1">@</span>
-        <span className="font-medium">{g.home_team}</span>
+        <TeamLink id={g.home_team_id} name={g.home_team} />
       </span>
     ),
   },

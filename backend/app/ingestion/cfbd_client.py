@@ -34,9 +34,14 @@ class CFBDClient:
             return response.json()
 
     async def get_teams(self) -> list[dict]:
-        """Fetch all FBS teams."""
+        """Fetch every team.
+
+        /teams has no division filter (it silently ignored the old
+        division=fbs param), so the service filters on each team's
+        classification field instead.
+        """
         logger.info("Fetching teams from CFBD")
-        return await self._get("/teams", params={"division": "fbs"})
+        return await self._get("/teams")
 
     async def get_games(self, year: int, season_type: str = "regular") -> list[dict]:
         """Fetch games for a given year and season type."""
@@ -45,9 +50,12 @@ class CFBDClient:
             "/games", params={"year": year, "seasonType": season_type}
         )
 
-    async def get_roster(self, team: str, year: int) -> list[dict]:
-            """Fetch roster for a specific team and year."""
-            logger.info(f"Fetching {year} roster for {team} from CFBD")
-            return await self._get(
-                "/roster", params={"team": team, "year": year}
-            )
+    async def get_roster(self, year: int, classification: str) -> list[dict]:
+        """Fetch every roster in one classification ("fbs" or "fcs").
+
+        With no team param, one call returns every team's roster.
+        """
+        logger.info(f"Fetching {year} {classification} rosters from CFBD")
+        return await self._get(
+            "/roster", params={"year": year, "classification": classification}
+        )

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone, date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.team import Team
@@ -414,17 +414,23 @@ class HighlightlyIngestionService:
         await self.db.flush()
 
         try:
-            # Get all Highlightly matches that have been played
-            result = await self.db.execute(
-                select(Game).where(
+            # Only games we haven't pulled yet. Without this, every run
+            # re-fetched the same first N games and never made progress.
+            has_stats = exists().where(PlayerStats.game_id == Game.id)
+            query = (
+                select(Game)
+                .where(
                     Game.source == "highlightly",
                     Game.status == "final",
+                    ~has_stats,
                 )
+                # Newest first, so recent games fill in before old ones
+                .order_by(Game.game_date.desc().nulls_last(), Game.id.desc())
             )
-            matches = result.scalars().all()
-
             if limit:
-                matches = matches[:limit]
+                query = query.limit(limit)
+
+            matches = (await self.db.execute(query)).scalars().all()
 
             # Build team lookup: external_id -> internal id
             result = await self.db.execute(

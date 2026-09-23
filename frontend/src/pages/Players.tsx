@@ -3,6 +3,7 @@ import { getPlayers } from "../api/client";
 import type { Player } from "../api/types";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
+import TeamLink from "../components/TeamLink";
 
 const COLUMNS: Column<Player>[] = [
   {
@@ -26,7 +27,7 @@ const COLUMNS: Column<Player>[] = [
   },
   {
     header: "Team",
-    accessor: (p) => p.team_name || "--",
+    accessor: (p) => <TeamLink id={p.team_id} name={p.team_name} className="" />,
   },
   {
     header: "League",

@@ -50,25 +50,29 @@ async def test_cfbd_sends_bearer_auth_and_params():
 
 
 @pytest.mark.asyncio
-async def test_cfbd_teams_filters_to_fbs():
+async def test_cfbd_teams_sends_no_division_filter():
     patcher, requests = mock_http(lambda r: httpx.Response(200, json=[{"id": 1}]))
 
     with patcher:
         result = await CFBDClient().get_teams()
 
     assert result == [{"id": 1}]
-    assert requests[0].url.params["division"] == "fbs"
+    assert requests[0].url.path == "/teams"
+    assert "division" not in requests[0].url.params
 
 
 @pytest.mark.asyncio
-async def test_cfbd_roster_params():
+async def test_cfbd_roster_by_classification():
     patcher, requests = mock_http(lambda r: httpx.Response(200, json=[]))
 
     with patcher:
-        await CFBDClient().get_roster(team="Oklahoma State", year=2024)
+        await CFBDClient().get_roster(year=2026, classification="fcs")
 
+    params = requests[0].url.params
     assert requests[0].url.path == "/roster"
-    assert requests[0].url.params["team"] == "Oklahoma State"
+    assert params["classification"] == "fcs"
+    assert params["year"] == "2026"
+    assert "team" not in params
 
 
 @pytest.mark.asyncio

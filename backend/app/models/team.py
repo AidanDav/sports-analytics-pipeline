@@ -19,6 +19,8 @@ class Team(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     abbreviation: Mapped[str | None] = mapped_column(String(20))
     conference: Mapped[str | None] = mapped_column(String(50))
+    # CFBD's division: "fbs", "fcs", "ii", "iii". Null for NFL teams.
+    classification: Mapped[str | None] = mapped_column(String(10))
     # Tracks when records were created and last updated
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

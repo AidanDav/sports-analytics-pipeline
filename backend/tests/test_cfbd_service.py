@@ -21,14 +21,15 @@ from app.models.team import Team
 # --- Canned CFBD payloads (trimmed to the fields the service reads) ---
 
 CFBD_TEAMS = [
-    {"id": 197, "school": "Oklahoma State", "abbreviation": "OKST", "conference": "Big 12"},
-    {"id": 251, "school": "Texas", "abbreviation": "TEX", "conference": "SEC"},
+    {"id": 197, "school": "Oklahoma State", "abbreviation": "OKST", "conference": "Big 12", "classification": "fbs"},
+    {"id": 251, "school": "Texas", "abbreviation": "TEX", "conference": "SEC", "classification": "fbs"},
 ]
 
 CFBD_GAMES = [
     {
         "id": 401628374, "season": 2024, "week": 1,
         "homeTeam": "Oklahoma State", "awayTeam": "Texas",
+        "homeClassification": "fbs", "awayClassification": "fbs",
         "homePoints": 34, "awayPoints": 27, "completed": True,
         "startDate": "2024-08-31T23:00:00.000Z", "venue": "Boone Pickens Stadium",
     },
@@ -36,14 +37,17 @@ CFBD_GAMES = [
         # Opponent not in our teams table, and game not played yet
         "id": 401628375, "season": 2024, "week": 2,
         "homeTeam": "Oklahoma State", "awayTeam": "Some FCS School",
+        "homeClassification": "fbs", "awayClassification": "fcs",
         "homePoints": None, "awayPoints": None, "completed": False,
         "startDate": "2024-09-07T18:00:00.000Z", "venue": None,
     },
 ]
 
 CFBD_ROSTER = [
-    {"id": 4430807, "firstName": "Ollie", "lastName": "Gordon", "position": "RB", "jersey": 0},
-    {"id": 4432001, "firstName": "Alan", "lastName": "Bowman", "position": "QB", "jersey": 7},
+    {"id": "4430807", "firstName": "Ollie", "lastName": "Gordon",
+     "team": "Oklahoma State", "position": "RB", "jersey": 0},
+    {"id": "4432001", "firstName": "Alan", "lastName": "Bowman",
+     "team": "Oklahoma State", "position": "QB", "jersey": 7},
 ]
 
 
@@ -77,6 +81,7 @@ async def test_ingest_teams_creates_and_maps_fields(service, db_session):
     assert okst.external_id == "197"
     assert okst.abbreviation == "OKST"
     assert okst.conference == "Big 12"
+    assert okst.classification == "fbs"
     assert okst.league == "cfb"
     assert okst.source == "cfbd"
 
@@ -193,44 +198,75 @@ async def test_ingest_games_updates_scores_on_rerun(service, db_session):
 # --- Players ---
 
 @pytest.mark.asyncio
-async def test_ingest_players_fetches_roster_per_team(service, db_session):
+async def test_ingest_players_one_call_per_classification(service, db_session):
     await service.ingest_teams()
+
     run = await service.ingest_players(year=2024)
 
     assert run.status == "success"
-    # One roster call per team in the database
     assert service.client.get_roster.await_count == 2
-    service.client.get_roster.assert_any_await(team="Oklahoma State", year=2024)
+    service.client.get_roster.assert_any_await(year=2024, classification="fbs")
+    service.client.get_roster.assert_any_await(year=2024, classification="fcs")
+    # The mock returns the same roster twice: created once, then updated
+    assert run.rows_created == 2
+    assert run.rows_updated == 2
 
 
 @pytest.mark.asyncio
 async def test_ingest_players_maps_fields(service, db_session):
-    # Only one team, so the shared roster payload isn't inserted twice
-    service.client.get_teams.return_value = [CFBD_TEAMS[0]]
     await service.ingest_teams()
     await service.ingest_players(year=2024)
 
-    team = (await _all(db_session, Team))[0]
-    players = {p.last_name: p for p in await _all(db_session, Player)}
+    teams = {t.name: t.id for t in await _all(db_session, Team)}
+    gordon = {p.last_name: p for p in await _all(db_session, Player)}["Gordon"]
 
-    gordon = players["Gordon"]
     assert gordon.first_name == "Ollie"
     assert gordon.position == "RB"
     assert gordon.number == 0
-    assert gordon.team_id == team.id
+    assert gordon.team_id == teams["Oklahoma State"]
     assert gordon.league == "cfb"
 
 
 @pytest.mark.asyncio
-async def test_ingest_players_skips_failed_roster_and_continues(service, db_session):
-    """One team's roster 404ing shouldn't kill the whole run."""
+async def test_ingest_players_skips_unmatched_team_name(service, db_session):
+    """Real CFBD data has typos like "SacredHeart" for "Sacred Heart"."""
+    await service.ingest_teams()
+    service.client.get_roster.return_value = CFBD_ROSTER + [
+        {"id": "999", "firstName": "Johnny", "lastName": "Hobgood",
+         "team": "SacredHeart", "position": "QB", "jersey": 13},
+    ]
+
+    await service.ingest_players(year=2024)
+
+    names = {p.last_name for p in await _all(db_session, Player)}
+    assert "Hobgood" not in names
+    assert "Gordon" in names
+
+
+@pytest.mark.asyncio
+async def test_ingest_players_null_fields_do_not_overwrite(service, db_session):
+    await service.ingest_teams()
+    await service.ingest_players(year=2024)
+
+    service.client.get_roster.return_value = [
+        {**CFBD_ROSTER[0], "position": None, "jersey": None},
+    ]
+    await service.ingest_players(year=2024)
+
+    gordon = {p.last_name: p for p in await _all(db_session, Player)}["Gordon"]
+    assert gordon.position == "RB"
+    assert gordon.number == 0
+
+
+@pytest.mark.asyncio
+async def test_ingest_players_failed_classification_continues(service, db_session):
     await service.ingest_teams()
 
-    async def roster_side_effect(team, year):
-        if team == "Texas":
+    async def roster_side_effect(year, classification):
+        if classification == "fcs":
             raise httpx.HTTPStatusError(
-                "404", request=httpx.Request("GET", "http://x"),
-                response=httpx.Response(404),
+                "500", request=httpx.Request("GET", "http://x"),
+                response=httpx.Response(500),
             )
         return CFBD_ROSTER
 
@@ -240,3 +276,31 @@ async def test_ingest_players_skips_failed_roster_and_continues(service, db_sess
     assert run.status == "success"
     assert run.rows_skipped == 1
     assert run.rows_created == 2
+
+@pytest.mark.asyncio
+async def test_ingest_teams_keeps_only_fbs_and_fcs(service, db_session):
+    service.client.get_teams.return_value = CFBD_TEAMS + [
+        {"id": 1, "school": "Murray State", "classification": "fcs"},
+        {"id": 2, "school": "Ferris State", "classification": "ii"},
+    ]
+
+    run = await service.ingest_teams()
+
+    names = {t.name for t in await _all(db_session, Team)}
+    assert "Murray State" in names
+    assert "Ferris State" not in names
+    assert run.rows_skipped == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_games_skips_non_division_one(service, db_session):
+    await service.ingest_teams()
+    service.client.get_games.return_value = [
+        {**CFBD_GAMES[0], "id": 1, "awayTeam": "Ferris State", "awayClassification": "ii"},
+    ]
+
+    run = await service.ingest_games(year=2024)
+
+    assert run.rows_created == 0
+    assert run.rows_skipped == 1
+    assert await _all(db_session, Game) == []

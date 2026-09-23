@@ -12,6 +12,7 @@ from app.ingestion.cfbd_client import CFBDClient
 
 
 logger = logging.getLogger(__name__)
+KEPT_CLASSIFICATIONS = ("fbs", "fcs")
 
 
 class CFBDIngestionService:
@@ -38,8 +39,12 @@ class CFBDIngestionService:
             created = 0
             updated = 0
             skipped = 0
-
+            
             for raw in raw_teams:
+                classification = raw.get("classification")
+                if classification not in KEPT_CLASSIFICATIONS:
+                    skipped += 1
+                    continue
                 # Step 3: Check if this team already exists (upsert logic)
                 external_id = str(raw["id"])
                 result = await self.db.execute(
@@ -65,6 +70,7 @@ class CFBDIngestionService:
                         name=raw.get("school", "Unknown"),
                         abbreviation=raw.get("abbreviation"),
                         conference=raw.get("conference"),
+                        classification=classification,
                     )
                     self.db.add(team)
                     created += 1
@@ -115,6 +121,12 @@ class CFBDIngestionService:
             team_lookup = {team.name: team.id for team in teams}
 
             for raw in raw_games:
+                if (
+                    raw.get("homeClassification") not in KEPT_CLASSIFICATIONS
+                    or raw.get("awayClassification") not in KEPT_CLASSIFICATIONS
+                ):
+                    skipped += 1
+                    continue
                 external_id = str(raw["id"])
                 result = await self.db.execute(
                     select(Game).where(
@@ -186,73 +198,80 @@ class CFBDIngestionService:
         return run
 
     async def ingest_players(self, year: int) -> IngestionRun:
-        """Fetch rosters from CFBD and upsert players into the database.
-    
-        CFBD doesn't have a bulk players endpoint, so we fetch
-        roster per team. We only pull teams we already have in our
-        database to avoid wasted API calls.
+        """Fetch every FBS and FCS roster and upsert players.
+
+        /roster accepts a classification with no team, so this is two
+        API calls total instead of one per team. Players are matched to
+        our teams by the roster's team name.
         """
-        run = IngestionRun(
-        source="cfbd",
-        data_type="players",
-        status="running",
-        )
+        run = IngestionRun(source="cfbd", data_type="players", status="running")
         self.db.add(run)
         await self.db.flush()
 
         try:
-            # Get all CFBD teams so we can pull each roster
-            result = await self.db.execute(
-                select(Team).where(Team.source == "cfbd")
-            )
-            teams = result.scalars().all()
+            result = await self.db.execute(select(Team).where(Team.source == "cfbd"))
+            team_lookup = {t.name: t.id for t in result.scalars().all()}
+
+            # Load existing players once. Two classifications return tens
+            # of thousands of players, and one query per player is far
+            # too slow at that size.
+            result = await self.db.execute(select(Player).where(Player.source == "cfbd"))
+            players_by_ext_id = {p.external_id: p for p in result.scalars().all()}
 
             created = 0
             updated = 0
             skipped = 0
+            unmatched_teams = set()
 
-            for team in teams:
+            for classification in KEPT_CLASSIFICATIONS:
                 try:
                     raw_players = await self.client.get_roster(
-                        team=team.name, year=year
+                        year=year, classification=classification
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch roster for {team.name}: {e}"
-                    )
+                    logger.warning(f"Failed to fetch {classification} rosters: {e}")
                     skipped += 1
                     continue
 
                 for raw in raw_players:
-                    external_id = str(raw["id"])
-                    result = await self.db.execute(
-                        select(Player).where(
-                            Player.source == "cfbd",
-                            Player.external_id == external_id
-                        )
-                    )
-                    existing = result.scalar_one_or_none()
+                    team_id = team_lookup.get(raw.get("team"))
+                    if team_id is None:
+                        # CFBD data has name typos like "SacredHeart".
+                        # Skipping beats attaching a player to a guess.
+                        unmatched_teams.add(raw.get("team"))
+                        skipped += 1
+                        continue
 
-                    if existing:
-                        existing.first_name = raw.get("firstName", existing.first_name)
-                        existing.last_name = raw.get("lastName", existing.last_name)
-                        existing.position = raw.get("position", existing.position)
-                        existing.number = raw.get("jersey", existing.number)
-                        existing.team_id = team.id
+                    external_id = str(raw["id"])
+                    fields = {
+                        "team_id": team_id,
+                        "first_name": raw.get("firstName"),
+                        "last_name": raw.get("lastName"),
+                        "position": raw.get("position"),
+                        "number": raw.get("jersey"),
+                    }
+
+                    player = players_by_ext_id.get(external_id)
+                    if player:
+                        # Only overwrite with real values, so a sparse
+                        # entry can't erase a known position or number
+                        for key, value in fields.items():
+                            if value is not None:
+                                setattr(player, key, value)
                         updated += 1
                     else:
+                        fields["last_name"] = fields["last_name"] or "Unknown"
                         player = Player(
-                            source="cfbd",
-                            external_id=external_id,
-                            league="cfb",
-                            team_id=team.id,
-                            first_name=raw.get("firstName"),
-                            last_name=raw.get("lastName", "Unknown"),
-                            position=raw.get("position"),
-                            number=raw.get("jersey"),
+                            source="cfbd", external_id=external_id, league="cfb", **fields
                         )
                         self.db.add(player)
+                        players_by_ext_id[external_id] = player
                         created += 1
+
+            if unmatched_teams:
+                logger.warning(
+                    f"Roster teams not found in teams table: {sorted(unmatched_teams)}"
+                )
 
             await self.db.flush()
             run.status = "success"
@@ -260,7 +279,6 @@ class CFBDIngestionService:
             run.rows_updated = updated
             run.rows_skipped = skipped
             run.completed_at = datetime.now(timezone.utc)
-
             logger.info(
                 f"CFBD player ingestion for {year} complete: {created} created, "
                 f"{updated} updated, {skipped} skipped"

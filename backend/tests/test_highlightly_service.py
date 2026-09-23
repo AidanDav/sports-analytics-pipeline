@@ -455,15 +455,17 @@ async def test_ingest_box_scores_stat_values(service, db_session):
 
 @pytest.mark.asyncio
 async def test_ingest_box_scores_rerun_does_not_duplicate(service, db_session):
-    """Regression test for the Day 5 duplicate stat row bug."""
+    """Regression test for the Day 5 duplicate stat row bug. A rerun now
+    skips processed games entirely instead of re-fetching them."""
     await service.ingest_teams()
     await service.ingest_matches(season=2024)
     await service.ingest_box_scores()
+    service.client.get_box_score.reset_mock()
 
     run = await service.ingest_box_scores()
 
+    assert service.client.get_box_score.await_count == 0
     assert run.rows_created == 0
-    assert run.rows_skipped == 4
     assert len(await _all(db_session, Player)) == 3
     assert len(await _all(db_session, PlayerStats)) == 4
 
@@ -484,6 +486,23 @@ async def test_ingest_box_scores_respects_limit(service, db_session):
 
     assert service.client.get_box_score.await_count == 1
 
+@pytest.mark.asyncio
+async def test_ingest_box_scores_advances_past_processed_games(service, db_session):
+    """Two limit=1 runs should hit two different games, not the same one twice."""
+    await service.ingest_teams()
+    finished = [
+        {**m, "state": {"description": "Finished", "score": {"current": "10 - 3"}}}
+        for m in HL_MATCHES
+    ]
+    service.client.get_matches.return_value = finished
+    await service.ingest_matches(season=2024)
+
+    await service.ingest_box_scores(limit=1)
+    await service.ingest_box_scores(limit=1)
+
+    fetched = [c.kwargs["match_id"] for c in service.client.get_box_score.await_args_list]
+    assert len(fetched) == 2
+    assert len(set(fetched)) == 2
 
 @pytest.mark.asyncio
 async def test_ingest_box_scores_skips_failed_match(service, db_session):

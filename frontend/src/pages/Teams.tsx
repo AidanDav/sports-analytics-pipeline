@@ -3,9 +3,10 @@ import { getTeams } from "../api/client";
 import type { Team } from "../api/types";
 import PageHeader from "../components/PageHeader";
 import DataTable, { type Column } from "../components/DataTable";
+import TeamLink from "../components/TeamLink";
 
 const COLUMNS: Column<Team>[] = [
-  { header: "Name", accessor: (t) => <span className="font-medium">{t.name}</span> },
+  { header: "Name", accessor: (t) => <TeamLink id={t.id} name={t.name} /> },
   { header: "Abbreviation", accessor: (t) => t.abbreviation || "--" },
   { header: "Conference", accessor: (t) => t.conference || "--" },
   {

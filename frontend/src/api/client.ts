@@ -6,6 +6,7 @@ import type {
   PaginatedResponse,
   Team,
   Game,
+  GameStatLine,
   Player,
   PlayerStats,
   Report,
@@ -77,6 +78,12 @@ export function getGames(params?: {
   });
 }
 
+export function getGameStats(gameId: number, teamId?: number) {
+  // Plain array, not paginated: one game's box score comes back whole
+  return fetchJSON<GameStatLine[]>(`/games/${gameId}/stats`, {
+    team_id: teamId ? String(teamId) : "",
+  });
+}
 // --- Players ---
 
 export function getPlayers(params?: {
