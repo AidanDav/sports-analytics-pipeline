@@ -304,3 +304,15 @@ async def test_ingest_games_skips_non_division_one(service, db_session):
     assert run.rows_created == 0
     assert run.rows_skipped == 1
     assert await _all(db_session, Game) == []
+
+@pytest.mark.asyncio
+async def test_ingest_teams_sets_classification_on_existing_teams(service, db_session):
+    """Teams created before the column existed must get it on the next sync."""
+    db_session.add(Team(source="cfbd", external_id="197", league="cfb", name="Oklahoma State"))
+    await db_session.commit()
+
+    run = await service.ingest_teams()
+
+    assert run.rows_updated == 1
+    okst = {t.name: t for t in await _all(db_session, Team)}["Oklahoma State"]
+    assert okst.classification == "fbs"

@@ -45,6 +45,7 @@ class CFBDIngestionService:
                 if classification not in KEPT_CLASSIFICATIONS:
                     skipped += 1
                     continue
+
                 # Step 3: Check if this team already exists (upsert logic)
                 external_id = str(raw["id"])
                 result = await self.db.execute(
@@ -60,6 +61,7 @@ class CFBDIngestionService:
                     existing.name = raw.get("school", existing.name)
                     existing.abbreviation = raw.get("abbreviation", existing.abbreviation)
                     existing.conference = raw.get("conference", existing.conference)
+                    existing.classification = classification
                     updated += 1
                 else:
                     # Create a new team record
