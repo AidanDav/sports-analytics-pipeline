@@ -3,6 +3,8 @@ from datetime import date
 
 from app.models.team import Team
 from app.models.game import Game
+from app.models.player import Player
+from app.models.player_stats import PlayerStats
 
 
 @pytest.mark.asyncio
@@ -214,3 +216,111 @@ async def test_get_games_unknown_conference_returns_nothing(client, db_session):
 
     assert response.status_code == 200
     assert response.json()["total"] == 0
+
+async def _seed_box_score(db_session):
+    """One NFL game. Two Eagles players (Hurts with two lines) and one Cowboy."""
+    eagles = Team(source="highlightly", external_id="1", league="nfl", name="Philadelphia Eagles")
+    cowboys = Team(source="highlightly", external_id="2", league="nfl", name="Dallas Cowboys")
+    db_session.add_all([eagles, cowboys])
+    await db_session.commit()
+
+    game = Game(
+        source="highlightly", external_id="500", league="nfl",
+        season=2024, week=1, home_team_id=eagles.id, away_team_id=cowboys.id,
+        home_score=34, away_score=6, status="final",
+    )
+    hurts = Player(source="highlightly", external_id="10", league="nfl", team_id=eagles.id,
+                   first_name="Jalen", last_name="Hurts", position="QB")
+    barkley = Player(source="highlightly", external_id="11", league="nfl", team_id=eagles.id,
+                     first_name="Saquon", last_name="Barkley", position="RB")
+    lamb = Player(source="highlightly", external_id="12", league="nfl", team_id=cowboys.id,
+                  first_name="CeeDee", last_name="Lamb", position="WR")
+    db_session.add_all([game, hurts, barkley, lamb])
+    await db_session.commit()
+
+    db_session.add_all([
+        PlayerStats(source="highlightly", player_id=hurts.id, game_id=game.id,
+                    stat_category="rushing", carries=8, yards=40.0, touchdowns=1),
+        PlayerStats(source="highlightly", player_id=barkley.id, game_id=game.id,
+                    stat_category="rushing", carries=20, yards=120.0, touchdowns=2),
+        PlayerStats(source="highlightly", player_id=hurts.id, game_id=game.id,
+                    stat_category="passing", attempts=30, completions=20,
+                    yards=250.0, touchdowns=2, interceptions=0),
+        PlayerStats(source="highlightly", player_id=lamb.id, game_id=game.id,
+                    stat_category="receiving", receptions=6, targets=9, yards=90.0),
+    ])
+    await db_session.commit()
+    return eagles, cowboys, game
+
+
+@pytest.mark.asyncio
+async def test_get_games_includes_team_ids(client, db_session):
+    eagles, cowboys, _ = await _seed_box_score(db_session)
+
+    response = await client.get("/games")
+
+    game = response.json()["data"][0]
+    assert game["home_team_id"] == eagles.id
+    assert game["away_team_id"] == cowboys.id
+
+
+@pytest.mark.asyncio
+async def test_get_game_stats_resolves_players(client, db_session):
+    _, _, game = await _seed_box_score(db_session)
+
+    response = await client.get(f"/games/{game.id}/stats")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 4
+    names = {line["player_name"] for line in data}
+    assert names == {"Jalen Hurts", "Saquon Barkley", "CeeDee Lamb"}
+
+
+@pytest.mark.asyncio
+async def test_get_game_stats_filters_by_team(client, db_session):
+    eagles, _, game = await _seed_box_score(db_session)
+
+    response = await client.get(f"/games/{game.id}/stats", params={"team_id": eagles.id})
+
+    data = response.json()
+    assert all(line["team_id"] == eagles.id for line in data)
+    assert "CeeDee Lamb" not in {line["player_name"] for line in data}
+
+
+@pytest.mark.asyncio
+async def test_get_game_stats_ordered_by_category_then_yards(client, db_session):
+    """Seeded out of order on purpose, so this proves the sort."""
+    eagles, _, game = await _seed_box_score(db_session)
+
+    response = await client.get(f"/games/{game.id}/stats", params={"team_id": eagles.id})
+
+    order = [(l["player_name"], l["stat_category"]) for l in response.json()]
+    assert order == [
+        ("Jalen Hurts", "passing"),
+        ("Saquon Barkley", "rushing"),
+        ("Jalen Hurts", "rushing"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_game_stats_no_box_score(client, db_session):
+    """A real game with no stat lines (every CFB game) is an empty list, not a 404."""
+    team = Team(source="cfbd", external_id="1", league="cfb", name="Oklahoma State")
+    db_session.add(team)
+    await db_session.commit()
+    game = Game(source="cfbd", external_id="1", league="cfb", season=2024, week=1,
+                home_team_id=team.id)
+    db_session.add(game)
+    await db_session.commit()
+
+    response = await client.get(f"/games/{game.id}/stats")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_get_game_stats_game_not_found(client):
+    response = await client.get("/games/99999/stats")
+    assert response.status_code == 404

@@ -19,3 +19,13 @@ class PlayerStatsResponse(BaseModel):
     sacks: float | None
 
     model_config = {"from_attributes": True}
+
+class GameStatLineResponse(PlayerStatsResponse):
+    """A stat line with the player resolved, for box score views.
+
+    PlayerStatsResponse only carries player_id, which forces the
+    frontend into one request per player just to show a name.
+    """
+    player_name: str
+    position: str | None
+    team_id: int | None
