@@ -5,6 +5,7 @@ class PlayerStatsResponse(BaseModel):
     id: int
     player_id: int | None
     game_id: int | None
+    team_id: int | None
     stat_category: str
     attempts: int | None
     completions: int | None
@@ -20,6 +21,7 @@ class PlayerStatsResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
 class GameStatLineResponse(PlayerStatsResponse):
     """A stat line with the player resolved, for box score views.
 
@@ -28,4 +30,3 @@ class GameStatLineResponse(PlayerStatsResponse):
     """
     player_name: str
     position: str | None
-    team_id: int | None

@@ -18,6 +18,9 @@ class PlayerStats(Base):
     game_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("games.id", ondelete="CASCADE")
     )
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), index=True
+    )
     # What category of stats: "passing", "rushing", "receiving", "defense"
     stat_category: Mapped[str] = mapped_column(String(30), nullable=False)
     # Individual stat fields -- nullable because not every category

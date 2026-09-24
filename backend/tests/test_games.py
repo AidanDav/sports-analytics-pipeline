@@ -1,6 +1,8 @@
 import pytest
 from datetime import date
 
+from sqlalchemy import select
+
 from app.models.team import Team
 from app.models.game import Game
 from app.models.player import Player
@@ -240,13 +242,17 @@ async def _seed_box_score(db_session):
 
     db_session.add_all([
         PlayerStats(source="highlightly", player_id=hurts.id, game_id=game.id,
+                    team_id=eagles.id,
                     stat_category="rushing", carries=8, yards=40.0, touchdowns=1),
         PlayerStats(source="highlightly", player_id=barkley.id, game_id=game.id,
+                    team_id=eagles.id,
                     stat_category="rushing", carries=20, yards=120.0, touchdowns=2),
         PlayerStats(source="highlightly", player_id=hurts.id, game_id=game.id,
+                    team_id=eagles.id,
                     stat_category="passing", attempts=30, completions=20,
                     yards=250.0, touchdowns=2, interceptions=0),
         PlayerStats(source="highlightly", player_id=lamb.id, game_id=game.id,
+                    team_id=cowboys.id,
                     stat_category="receiving", receptions=6, targets=9, yards=90.0),
     ])
     await db_session.commit()
@@ -324,3 +330,19 @@ async def test_get_game_stats_no_box_score(client, db_session):
 async def test_get_game_stats_game_not_found(client):
     response = await client.get("/games/99999/stats")
     assert response.status_code == 404
+
+@pytest.mark.asyncio
+async def test_get_game_stats_uses_team_at_game_time(client, db_session):
+    """A player who has since moved teams keeps his old lines under his old team."""
+    eagles, cowboys, game = await _seed_box_score(db_session)
+    barkley = (await db_session.execute(
+        select(Player).where(Player.last_name == "Barkley")
+    )).scalar_one()
+    barkley.team_id = cowboys.id
+    await db_session.commit()
+
+    eagles_lines = (await client.get(
+        f"/games/{game.id}/stats", params={"team_id": eagles.id}
+    )).json()
+
+    assert "Saquon Barkley" in {l["player_name"] for l in eagles_lines}

@@ -46,6 +46,7 @@ export interface PlayerStats {
   id: number;
   player_id: number | null;
   game_id: number | null;
+  team_id: number | null;
   stat_category: string;
   attempts: number | null;
   completions: number | null;
@@ -64,7 +65,6 @@ export interface PlayerStats {
 export interface GameStatLine extends PlayerStats {
   player_name: string;
   position: string | null;
-  team_id: number | null;
 }
 
 export interface Report {

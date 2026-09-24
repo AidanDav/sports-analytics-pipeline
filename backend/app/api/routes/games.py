@@ -115,8 +115,8 @@ async def get_game_stats(
     box score is naturally bounded, and the drill-down wants it all
     at once.
 
-    team_id filters on the player's current team, so a traded
-    player's old lines follow him to his new team.
+    team_id filters on the team recorded on each stat line, which is
+    the team the player was on in this game.
     """
     game = (
         await db.execute(select(Game).where(Game.id == game_id))
@@ -131,7 +131,7 @@ async def get_game_stats(
         .where(PlayerStats.game_id == game_id)
     )
     if team_id:
-        query = query.where(Player.team_id == team_id)
+        query = query.where(PlayerStats.team_id == team_id)
 
     rows = (await db.execute(query)).all()
 
@@ -140,7 +140,6 @@ async def get_game_stats(
             **PlayerStatsResponse.model_validate(stat).model_dump(),
             player_name=f"{player.first_name or ''} {player.last_name}".strip(),
             position=player.position,
-            team_id=player.team_id,
         )
         for stat, player in rows
     ]

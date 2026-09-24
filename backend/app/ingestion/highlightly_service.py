@@ -521,6 +521,7 @@ class HighlightlyIngestionService:
                                 source="highlightly",
                                 player_id=player.id,
                                 game_id=match.id,
+                                team_id=internal_team_id,
                                 stat_category=category,
                                 **cat_data,
                             )

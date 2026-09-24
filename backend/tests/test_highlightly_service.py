@@ -430,6 +430,10 @@ async def test_ingest_box_scores_creates_players_and_stats(service, db_session):
     # 3 players + 4 stat lines
     assert run.rows_created == 7
 
+    # Each stat line records the team from the box score
+    lamb_stat = next(s for s in stats if s.player_id == players["Lamb"].id)
+    assert lamb_stat.team_id == teams["2"]
+
 
 @pytest.mark.asyncio
 async def test_ingest_box_scores_stat_values(service, db_session):
