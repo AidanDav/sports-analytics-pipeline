@@ -16,6 +16,7 @@ from app.ingestion.cfbd_service import CFBDIngestionService
 from app.models.game import Game
 from app.models.player import Player
 from app.models.team import Team
+from app.models.player_stats import PlayerStats
 
 
 # --- Canned CFBD payloads (trimmed to the fields the service reads) ---
@@ -50,6 +51,59 @@ CFBD_ROSTER = [
      "team": "Oklahoma State", "position": "QB", "jersey": 7},
 ]
 
+def _athletes(athlete_id, name, stat):
+    return {"id": athlete_id, "name": name, "stat": stat}
+
+
+CFBD_GAME_STATS = [
+    {
+        "id": 401628374,  # matches the first game in CFBD_GAMES
+        "teams": [
+            {
+                "team": "Oklahoma State", "homeAway": "home", "points": 34,
+                "categories": [
+                    {"name": "passing", "types": [
+                        {"name": "C/ATT", "athletes": [_athletes("4432001", "Alan Bowman", "20/30")]},
+                        {"name": "YDS", "athletes": [_athletes("4432001", "Alan Bowman", "250")]},
+                        {"name": "TD", "athletes": [_athletes("4432001", "Alan Bowman", "2")]},
+                        {"name": "INT", "athletes": [_athletes("4432001", "Alan Bowman", "1")]},
+                    ]},
+                    {"name": "rushing", "types": [
+                        {"name": "CAR", "athletes": [
+                            _athletes("4430807", "Ollie Gordon", "22"),
+                            # Team-total row, must be skipped
+                            _athletes("-9999", " Team", "2"),
+                        ]},
+                        {"name": "YDS", "athletes": [
+                            _athletes("4430807", "Ollie Gordon", "140"),
+                            _athletes("-9999", " Team", "-4"),
+                        ]},
+                        {"name": "TD", "athletes": [_athletes("4430807", "Ollie Gordon", "1")]},
+                    ]},
+                    {"name": "defensive", "types": [
+                        # Not on the roster, so the service creates him
+                        {"name": "TOT", "athletes": [_athletes("5000001", "Walk On", "7")]},
+                        {"name": "SACKS", "athletes": [_athletes("5000001", "Walk On", "1.5")]},
+                    ]},
+                    # No matching columns, must be ignored
+                    {"name": "kicking", "types": [
+                        {"name": "FG", "athletes": [_athletes("5000002", "Some Kicker", "2/3")]},
+                    ]},
+                ],
+            },
+            {
+                "team": "Texas", "homeAway": "away", "points": 27,
+                "categories": [
+                    {"name": "receiving", "types": [
+                        {"name": "REC", "athletes": [_athletes("5000003", "Texas Receiver", "6")]},
+                        {"name": "YDS", "athletes": [_athletes("5000003", "Texas Receiver", "88")]},
+                    ]},
+                ],
+            },
+        ],
+    },
+]
+
 
 @pytest.fixture()
 def service(db_session):
@@ -58,6 +112,7 @@ def service(db_session):
     svc.client.get_teams = AsyncMock(return_value=CFBD_TEAMS)
     svc.client.get_games = AsyncMock(return_value=CFBD_GAMES)
     svc.client.get_roster = AsyncMock(return_value=CFBD_ROSTER)
+    svc.client.get_game_player_stats = AsyncMock(return_value=CFBD_GAME_STATS)
     return svc
 
 
@@ -316,3 +371,113 @@ async def test_ingest_teams_sets_classification_on_existing_teams(service, db_se
     assert run.rows_updated == 1
     okst = {t.name: t for t in await _all(db_session, Team)}["Oklahoma State"]
     assert okst.classification == "fbs"
+
+
+# --- Game stats (box scores) ---
+
+async def _seed_for_stats(service):
+    """Teams, games, and the roster, as they'd exist before a stats sync."""
+    await service.ingest_teams()
+    await service.ingest_games(year=2024)
+    await service.ingest_players(year=2024)
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_one_call_per_classification(service, db_session):
+    await _seed_for_stats(service)
+
+    run = await service.ingest_game_stats(year=2024, week=1)
+
+    assert run.status == "success"
+    assert service.client.get_game_player_stats.await_count == 2
+    service.client.get_game_player_stats.assert_any_await(
+        year=2024, week=1, classification="fbs", season_type="regular"
+    )
+    service.client.get_game_player_stats.assert_any_await(
+        year=2024, week=1, classification="fcs", season_type="regular"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_pivots_into_lines(service, db_session):
+    """Four lines: Bowman passing, Gordon rushing, walk-on defense,
+    Texas receiver. The team row and kicking are dropped."""
+    await _seed_for_stats(service)
+
+    run = await service.ingest_game_stats(year=2024, week=1)
+
+    stats = await _all(db_session, PlayerStats)
+    assert {s.stat_category for s in stats} == {"passing", "rushing", "defense", "receiving"}
+    assert len(stats) == 4
+    # 2 new players (walk-on, Texas receiver) + 4 stat lines
+    assert run.rows_created == 6
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_values(service, db_session):
+    await _seed_for_stats(service)
+    await service.ingest_game_stats(year=2024, week=1)
+
+    players = {p.last_name: p for p in await _all(db_session, Player)}
+    stats = {
+        (s.player_id, s.stat_category): s for s in await _all(db_session, PlayerStats)
+    }
+
+    passing = stats[(players["Bowman"].id, "passing")]
+    assert passing.completions == 20
+    assert passing.attempts == 30
+    assert passing.yards == 250.0
+    assert passing.touchdowns == 2
+    assert passing.interceptions == 1
+
+    defense = stats[(players["On"].id, "defense")]
+    assert defense.tackles == 7.0
+    assert defense.sacks == 1.5
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_links_roster_players(service, db_session):
+    """Gordon is on the roster, so his line attaches to that player
+    instead of creating a second Gordon."""
+    await _seed_for_stats(service)
+    await service.ingest_game_stats(year=2024, week=1)
+
+    gordons = [p for p in await _all(db_session, Player) if p.last_name == "Gordon"]
+    assert len(gordons) == 1
+    rushing = [s for s in await _all(db_session, PlayerStats) if s.stat_category == "rushing"]
+    assert rushing[0].player_id == gordons[0].id
+    assert rushing[0].carries == 22
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_records_team_per_line(service, db_session):
+    await _seed_for_stats(service)
+    await service.ingest_game_stats(year=2024, week=1)
+
+    teams = {t.name: t.id for t in await _all(db_session, Team)}
+    receiving = [s for s in await _all(db_session, PlayerStats) if s.stat_category == "receiving"]
+    assert receiving[0].team_id == teams["Texas"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_rerun_does_not_duplicate(service, db_session):
+    await _seed_for_stats(service)
+    await service.ingest_game_stats(year=2024, week=1)
+
+    run = await service.ingest_game_stats(year=2024, week=1)
+
+    assert run.rows_created == 0
+    assert len(await _all(db_session, PlayerStats)) == 4
+
+
+@pytest.mark.asyncio
+async def test_ingest_game_stats_skips_unknown_game(service, db_session):
+    """Box scores only attach to games the games sync already stored."""
+    await _seed_for_stats(service)
+    service.client.get_game_player_stats.return_value = [
+        {**CFBD_GAME_STATS[0], "id": 999999999},
+    ]
+
+    run = await service.ingest_game_stats(year=2024, week=1)
+
+    assert run.rows_created == 0
+    assert await _all(db_session, PlayerStats) == []

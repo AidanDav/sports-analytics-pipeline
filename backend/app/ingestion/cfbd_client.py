@@ -59,3 +59,22 @@ class CFBDClient:
         return await self._get(
             "/roster", params={"year": year, "classification": classification}
         )
+
+    async def get_game_player_stats(
+        self, year: int, week: int, classification: str, season_type: str = "regular"
+    ) -> list[dict]:
+        """Fetch player box scores for every game in one week.
+
+        One call covers every game in the week for that classification,
+        so a full season is about 16 calls per classification.
+        """
+        logger.info(f"Fetching {year} week {week} {classification} player stats from CFBD")
+        return await self._get(
+            "/games/players",
+            params={
+                "year": year,
+                "week": week,
+                "classification": classification,
+                "seasonType": season_type,
+            },
+        )

@@ -74,6 +74,19 @@ async def test_cfbd_roster_by_classification():
     assert params["year"] == "2026"
     assert "team" not in params
 
+@pytest.mark.asyncio
+async def test_cfbd_game_player_stats_params():
+    patcher, requests = mock_http(lambda r: httpx.Response(200, json=[]))
+
+    with patcher:
+        await CFBDClient().get_game_player_stats(year=2026, week=3, classification="fbs")
+
+    params = requests[0].url.params
+    assert requests[0].url.path == "/games/players"
+    assert params["year"] == "2026"
+    assert params["week"] == "3"
+    assert params["classification"] == "fbs"
+    assert params["seasonType"] == "regular"
 
 @pytest.mark.asyncio
 async def test_cfbd_http_error_propagates():
