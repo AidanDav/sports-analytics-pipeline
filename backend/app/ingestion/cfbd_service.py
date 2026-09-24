@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone, date
 
-from sqlalchemy import select
+from sqlalchemy import select, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.team import Team
@@ -360,6 +360,43 @@ class CFBDIngestionService:
             logger.error(f"CFBD player ingestion failed: {e}")
 
         return run
+
+    async def stat_weeks_to_sync(self, year: int) -> list[int]:
+        """Pick which weeks the scheduled stats job should pull.
+
+        Always the latest week with finished games, since late results
+        and corrections land there. Plus the newest older week where no
+        game has stats at all, so the backfill moves steadily backward.
+        A week with a few permanently missing FCS box scores still counts
+        as done once any game in it has stats, or it would be re-pulled
+        forever.
+        """
+        finished = (
+            Game.source == "cfbd",
+            Game.season == year,
+            Game.status == "final",
+            Game.week.is_not(None),
+        )
+
+        latest = (
+            await self.db.execute(select(func.max(Game.week)).where(*finished))
+        ).scalar()
+        if latest is None:
+            return []
+
+        has_stats = exists().where(PlayerStats.game_id == Game.id)
+        weeks_with_stats = select(Game.week).where(*finished, has_stats)
+        backfill = (
+            await self.db.execute(
+                select(Game.week)
+                .where(*finished, Game.week < latest, Game.week.not_in(weeks_with_stats))
+                .distinct()
+                .order_by(Game.week.desc())
+                .limit(1)
+            )
+        ).scalar()
+
+        return [latest] if backfill is None else [latest, backfill]
 
     async def ingest_game_stats(
         self, year: int, week: int, season_type: str = "regular"

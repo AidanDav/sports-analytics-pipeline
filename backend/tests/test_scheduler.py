@@ -7,7 +7,7 @@ The scheduler is never started here. Two things are tested:
    the wrappers run synchronously without waiting for a cron trigger.
 """
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -43,7 +43,7 @@ def _fake_run(status="success"):
 
 def test_all_jobs_registered(registered_jobs):
     assert set(registered_jobs) == {
-        "cfbd_teams", "cfbd_games", "cfbd_players",
+        "cfbd_teams", "cfbd_games", "cfbd_players", "cfbd_game_stats",
         "highlightly_teams", "highlightly_matches", "highlightly_box_scores",
     }
 
@@ -51,6 +51,7 @@ def test_all_jobs_registered(registered_jobs):
 @pytest.mark.parametrize("job_id, expected_fields", [
     ("cfbd_teams", {"hour": "6", "minute": "0"}),
     ("cfbd_games", {"hour": "7,23", "minute": "0"}),
+    ("cfbd_game_stats", {"hour": "8,23", "minute": "45"}),
     ("cfbd_players", {"day_of_week": "mon", "hour": "8"}),
     ("highlightly_teams", {"hour": "6", "minute": "30"}),
     ("highlightly_matches", {"hour": "7,23", "minute": "30"}),
@@ -147,3 +148,39 @@ def test_job_listener_logs_outcomes(caplog):
 
     assert "cfbd_teams completed successfully" in caplog.text
     assert "cfbd_games failed: boom" in caplog.text
+
+@pytest.mark.asyncio
+async def test_cfbd_game_stats_job_syncs_each_week(fake_session):
+    with patch.object(sched_module, "CFBDIngestionService") as svc_cls:
+        svc = svc_cls.return_value
+        svc.stat_weeks_to_sync = AsyncMock(return_value=[4, 2])
+        svc.ingest_game_stats = AsyncMock(return_value=_fake_run())
+        await sched_module.run_cfbd_game_stats()
+
+    year = datetime.now().year
+    svc.ingest_game_stats.assert_has_awaits([
+        call(year=year, week=4),
+        call(year=year, week=2),
+    ])
+    # One commit per week, so week 4 is saved even if week 2 fails
+    assert fake_session.commit.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cfbd_game_stats_job_nothing_to_sync(fake_session):
+    with patch.object(sched_module, "CFBDIngestionService") as svc_cls:
+        svc = svc_cls.return_value
+        svc.stat_weeks_to_sync = AsyncMock(return_value=[])
+        svc.ingest_game_stats = AsyncMock()
+        await sched_module.run_cfbd_game_stats()
+
+    svc.ingest_game_stats.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cfbd_game_stats_job_rolls_back_and_swallows_error(fake_session):
+    with patch.object(sched_module, "CFBDIngestionService") as svc_cls:
+        svc_cls.return_value.stat_weeks_to_sync = AsyncMock(side_effect=RuntimeError("boom"))
+        await sched_module.run_cfbd_game_stats()
+
+    fake_session.rollback.assert_awaited_once()

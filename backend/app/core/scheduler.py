@@ -97,6 +97,30 @@ async def run_cfbd_players(year: int | None = None):
             await session.rollback()
             logger.error(f"CFBD players scheduled job failed: {e}")
 
+async def run_cfbd_game_stats(year: int | None = None):
+    """Scheduled job: pull CFB box scores for the weeks that need them.
+
+    At most two weeks per run (latest + one backfill), each one call
+    for FBS and one for FCS. Each week commits on its own, so a failure
+    in the second week keeps the first week's stats.
+    """
+    if year is None:
+        year = datetime.now().year
+
+    async with async_session() as session:
+        try:
+            service = CFBDIngestionService(session)
+            weeks = await service.stat_weeks_to_sync(year)
+            for week in weeks:
+                run = await service.ingest_game_stats(year=year, week=week)
+                await session.commit()
+                logger.info(
+                    f"CFBD game stats sync ({year} week {week}): {run.status} "
+                    f"({run.rows_created} created, {run.rows_skipped} skipped)"
+                )
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"CFBD game stats scheduled job failed: {e}")
 
 async def run_highlightly_teams():
     """Scheduled job: sync NFL teams from Highlightly."""
@@ -209,6 +233,19 @@ def configure_scheduler():
         misfire_grace_time=7200,
     )
 
+    # Box scores: twice daily at 8:45 AM and 11:45 PM UTC, after each
+    # games sync, so newly finished games are already marked final.
+    # At most 4 calls per run (2 weeks x FBS/FCS).
+    scheduler.add_job(
+        run_cfbd_game_stats,
+        "cron",
+        hour="8,23",
+        minute=45,
+        id="cfbd_game_stats",
+        name="CFBD Box Score Sync",
+        misfire_grace_time=3600,
+    )
+    
     # --- Highlightly jobs (NFL) ---
 
     # Teams: daily at 6:30 AM UTC (offset from CFBD to avoid overlap)

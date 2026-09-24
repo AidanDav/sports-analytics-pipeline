@@ -24,6 +24,7 @@ def _run(status="success", created=5, updated=2, error=None):
     ("/ingestion/cfbd/teams", "CFBDIngestionService", "ingest_teams", {}),
     ("/ingestion/cfbd/games?year=2023", "CFBDIngestionService", "ingest_games", {"year": 2023}),
     ("/ingestion/cfbd/players?year=2023", "CFBDIngestionService", "ingest_players", {"year": 2023}),
+    ("/ingestion/cfbd/game-stats?year=2026&week=3", "CFBDIngestionService", "ingest_game_stats", {"year": 2026, "week": 3, "season_type": "regular"}),
     ("/ingestion/highlightly/teams", "HighlightlyIngestionService", "ingest_teams", {"league": "NFL"}),
     ("/ingestion/highlightly/matches?season=2023", "HighlightlyIngestionService",
      "ingest_matches", {"season": 2023, "league": "NFL"}),
@@ -64,3 +65,9 @@ async def test_ingestion_route_surfaces_failure(client):
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error"] == "401 Unauthorized"
+
+@pytest.mark.asyncio
+async def test_game_stats_route_requires_year_and_week(client):
+    """No silent 2024 default on this route."""
+    response = await client.post("/ingestion/cfbd/game-stats")
+    assert response.status_code == 422

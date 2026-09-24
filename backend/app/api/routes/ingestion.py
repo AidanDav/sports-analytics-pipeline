@@ -93,3 +93,24 @@ async def ingest_highlightly_box_scores(
         rows_updated=run.rows_updated,
         error=run.error_message,
     )
+
+@router.post("/cfbd/game-stats", response_model=IngestionRunResponse)
+async def ingest_cfbd_game_stats(
+    year: int,
+    week: int,
+    season_type: str = "regular",
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger CFBD box score ingestion for one week.
+
+    year and week are required. A 2024 default here would silently
+    pull the wrong season, which already happened once with rosters.
+    """
+    service = CFBDIngestionService(db)
+    run = await service.ingest_game_stats(year=year, week=week, season_type=season_type)
+    return IngestionRunResponse(
+        status=run.status,
+        rows_created=run.rows_created,
+        rows_updated=run.rows_updated,
+        error=run.error_message,
+    )

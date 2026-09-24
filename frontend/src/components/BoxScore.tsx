@@ -67,8 +67,8 @@ export default function BoxScore({ gameId, teamId }: BoxScoreProps) {
   if (lines.length === 0) {
     return (
       <p className="text-sm text-slate-500">
-        No box score for this game. Player stats are only ingested for NFL
-        games, and only for matches the daily box score sync has reached.
+        No box score for this game yet. Stats are pulled a few hours after
+        games finish, and some FCS games have no box score available.
       </p>
     );
   }

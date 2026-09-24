@@ -481,3 +481,52 @@ async def test_ingest_game_stats_skips_unknown_game(service, db_session):
 
     assert run.rows_created == 0
     assert await _all(db_session, PlayerStats) == []
+
+# --- Choosing which weeks to sync ---
+
+async def _seed_weeks(db_session, weeks_with_stats):
+    """Final games in weeks 1-4 and a scheduled game in week 5.
+    Adds one stat line to each week in weeks_with_stats."""
+    team = Team(source="cfbd", external_id="1", league="cfb",
+                name="Oklahoma State", classification="fbs")
+    db_session.add(team)
+    await db_session.commit()
+
+    player = Player(source="cfbd", external_id="p1", league="cfb",
+                    team_id=team.id, last_name="Gordon")
+    games = {
+        week: Game(source="cfbd", external_id=f"g{week}", league="cfb",
+                   season=2026, week=week, home_team_id=team.id,
+                   status="final" if week <= 4 else "scheduled")
+        for week in (1, 2, 3, 4, 5)
+    }
+    db_session.add_all([player, *games.values()])
+    await db_session.commit()
+
+    db_session.add_all([
+        PlayerStats(source="cfbd", player_id=player.id, game_id=games[w].id,
+                    team_id=team.id, stat_category="rushing", yards=50.0)
+        for w in weeks_with_stats
+    ])
+    await db_session.commit()
+
+@pytest.mark.asyncio
+async def test_stat_weeks_latest_plus_newest_empty_week(service, db_session):
+    """Weeks 1 and 3 have stats. Latest is 4, newest untouched older week is 2.
+    The scheduled week 5 game doesn't count as latest."""
+    await _seed_weeks(db_session, weeks_with_stats=[1, 3])
+
+    assert await service.stat_weeks_to_sync(2026) == [4, 2]
+
+
+@pytest.mark.asyncio
+async def test_stat_weeks_latest_is_always_included(service, db_session):
+    """Even with stats everywhere, the latest week is re-pulled for late results."""
+    await _seed_weeks(db_session, weeks_with_stats=[1, 2, 3, 4])
+
+    assert await service.stat_weeks_to_sync(2026) == [4]
+
+
+@pytest.mark.asyncio
+async def test_stat_weeks_none_when_no_finished_games(service, db_session):
+    assert await service.stat_weeks_to_sync(2026) == []
