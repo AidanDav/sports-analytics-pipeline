@@ -159,17 +159,11 @@ async def run_highlightly_matches(season: int | None = None):
 
 async def run_highlightly_box_scores():
     """Scheduled job: pull box scores for completed NFL matches.
-
-    The limit parameter is the key to respecting Highlightly's
-    100 req/day free tier. Each box score is one API call, so
-    we cap at 10 per run. With the scheduler running this twice
-    a day, that's 20 box scores/day, leaving budget for manual
-    triggers and other endpoints.
     """
     async with async_session() as session:
         try:
             service = HighlightlyIngestionService(session)
-            run = await service.ingest_box_scores(limit=10)
+            run = await service.ingest_box_scores(limit=40)
             await session.commit()
             logger.info(
                 f"Highlightly box scores sync: {run.status} "
@@ -179,6 +173,24 @@ async def run_highlightly_box_scores():
             await session.rollback()
             logger.error(f"Highlightly box scores scheduled job failed: {e}")
 
+async def run_highlightly_player_positions():
+    """Scheduled job: fetch real positions for newly seen NFL players.
+
+    Runs after the afternoon box score sync, so anyone first seen
+    that day gets a real position the same day.
+    """
+    async with async_session() as session:
+        try:
+            service = HighlightlyIngestionService(session)
+            run = await service.ingest_player_positions(limit=200)
+            await session.commit()
+            logger.info(
+                f"Highlightly position sync: {run.status} "
+                f"({run.rows_updated} updated, {run.rows_skipped} skipped)"
+            )
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Highlightly position scheduled job failed: {e}")
 
 def configure_scheduler():
     """Register all ingestion jobs with their schedules.
@@ -233,9 +245,8 @@ def configure_scheduler():
         misfire_grace_time=7200,
     )
 
-    # Box scores: twice daily at 8:45 AM and 11:45 PM UTC, after each
-    # games sync, so newly finished games are already marked final.
-    # At most 4 calls per run (2 weeks x FBS/FCS).
+    # Box scores: twice daily at 9:00 AM and 3:00 PM UTC
+    # 40 per run covers a full NFL week with room to spare
     scheduler.add_job(
         run_cfbd_game_stats,
         "cron",
@@ -279,6 +290,18 @@ def configure_scheduler():
         minute=0,
         id="highlightly_box_scores",
         name="Highlightly Box Score Sync",
+        misfire_grace_time=3600,
+    )
+
+    # Player positions: daily at 4:00 PM UTC, an hour after the second
+    # box score run, so new players get real positions the same day
+    scheduler.add_job(
+        run_highlightly_player_positions,
+        "cron",
+        hour=16,
+        minute=0,
+        id="highlightly_player_positions",
+        name="Highlightly Player Position Sync",
         misfire_grace_time=3600,
     )
 

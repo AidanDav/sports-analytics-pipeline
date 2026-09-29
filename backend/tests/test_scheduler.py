@@ -45,6 +45,7 @@ def test_all_jobs_registered(registered_jobs):
     assert set(registered_jobs) == {
         "cfbd_teams", "cfbd_games", "cfbd_players", "cfbd_game_stats",
         "highlightly_teams", "highlightly_matches", "highlightly_box_scores",
+        "highlightly_player_positions",
     }
 
 
@@ -56,6 +57,7 @@ def test_all_jobs_registered(registered_jobs):
     ("highlightly_teams", {"hour": "6", "minute": "30"}),
     ("highlightly_matches", {"hour": "7,23", "minute": "30"}),
     ("highlightly_box_scores", {"hour": "9,15", "minute": "0"}),
+    ("highlightly_player_positions", {"hour": "16", "minute": "0"}),
 ])
 def test_job_schedules(registered_jobs, job_id, expected_fields):
     trigger = registered_jobs[job_id].trigger
@@ -75,14 +77,24 @@ def test_every_job_has_misfire_grace(registered_jobs):
 
 @pytest.mark.asyncio
 async def test_box_score_job_respects_rate_limit_cap(fake_session):
-    """limit=10 per run x 2 runs/day is what keeps us under Highlightly's
-    100 req/day free tier. If someone bumps it, this test should fail."""
+    """40 per run covers a full NFL week. The cap guards against a bug
+    that loops. If someone changes it, this test should make them
+    think about the quota."""
     with patch.object(sched_module, "HighlightlyIngestionService") as svc_cls:
         svc_cls.return_value.ingest_box_scores = AsyncMock(return_value=_fake_run())
         await sched_module.run_highlightly_box_scores()
 
-    svc_cls.return_value.ingest_box_scores.assert_awaited_once_with(limit=10)
+    svc_cls.return_value.ingest_box_scores.assert_awaited_once_with(limit=40)
     fake_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_position_job_respects_cap(fake_session):
+    with patch.object(sched_module, "HighlightlyIngestionService") as svc_cls:
+        svc_cls.return_value.ingest_player_positions = AsyncMock(return_value=_fake_run())
+        await sched_module.run_highlightly_player_positions()
+
+    svc_cls.return_value.ingest_player_positions.assert_awaited_once_with(limit=200)
 
 
 @pytest.mark.asyncio
@@ -108,6 +120,7 @@ async def test_season_jobs_default_to_current_year(fake_session, job, service_na
     ("run_highlightly_teams", "HighlightlyIngestionService", "ingest_teams"),
     ("run_highlightly_matches", "HighlightlyIngestionService", "ingest_matches"),
     ("run_highlightly_box_scores", "HighlightlyIngestionService", "ingest_box_scores"),
+    ("run_highlightly_player_positions", "HighlightlyIngestionService", "ingest_player_positions"),
 ])
 async def test_job_commits_on_success(fake_session, job, service_name, method):
     with patch.object(sched_module, service_name) as svc_cls:
@@ -126,6 +139,7 @@ async def test_job_commits_on_success(fake_session, job, service_name, method):
     ("run_highlightly_teams", "HighlightlyIngestionService", "ingest_teams"),
     ("run_highlightly_matches", "HighlightlyIngestionService", "ingest_matches"),
     ("run_highlightly_box_scores", "HighlightlyIngestionService", "ingest_box_scores"),
+    ("run_highlightly_player_positions", "HighlightlyIngestionService", "ingest_player_positions"),
 ])
 async def test_job_rolls_back_and_swallows_error(fake_session, job, service_name, method):
     """An unexpected crash must roll back and must not propagate, or it

@@ -30,6 +30,8 @@ def _run(status="success", created=5, updated=2, error=None):
      "ingest_matches", {"season": 2023, "league": "NFL"}),
     ("/ingestion/highlightly/box-scores?limit=3", "HighlightlyIngestionService",
      "ingest_box_scores", {"limit": 3}),
+    ("/ingestion/highlightly/player-positions?limit=5", "HighlightlyIngestionService",
+     "ingest_player_positions", {"limit": 5}),
 ])
 async def test_ingestion_route_calls_service(client, path, service, method, expected_kwargs):
     with patch(f"{ROUTES}.{service}") as svc_cls:

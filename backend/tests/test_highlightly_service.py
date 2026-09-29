@@ -523,3 +523,114 @@ async def test_ingest_box_scores_skips_failed_match(service, db_session):
     assert run.status == "success"
     assert run.rows_skipped == 1
     assert await _all(db_session, Player) == []
+
+# --- Player positions from profiles ---
+
+PROFILE_POSITIONS = {101: "QB", 102: "RB", 103: "TE"}
+
+
+def _profile(player_id):
+    """Shape of GET /players/{id}, trimmed to what the service reads."""
+    return [{
+        "id": player_id,
+        "fullName": "Test Player",
+        "profile": {"position": {"main": "Test", "abbreviation": PROFILE_POSITIONS[player_id]}},
+    }]
+
+
+def _http_error(status):
+    return httpx.HTTPStatusError(
+        str(status),
+        request=httpx.Request("GET", "http://x"),
+        response=httpx.Response(status),
+    )
+
+
+def _fake_details(errors=None):
+    """get_player_details stand-in. errors maps player_id -> HTTP status to raise."""
+    errors = errors or {}
+
+    def _inner(player_id):
+        if player_id in errors:
+            raise _http_error(errors[player_id])
+        return _profile(player_id)
+
+    return _inner
+
+
+async def _seed_guessed_players(db_session):
+    """Positions as the stat-based guess got them: Barkley and Goedert wrong."""
+    db_session.add_all([
+        Player(source="highlightly", external_id="101", league="nfl",
+               last_name="Hurts", position="QB"),
+        Player(source="highlightly", external_id="102", league="nfl",
+               last_name="Barkley", position="WR"),
+        Player(source="highlightly", external_id="103", league="nfl",
+               last_name="Goedert", position="WR"),
+    ])
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_positions_replace_guesses(service, db_session):
+    await _seed_guessed_players(db_session)
+    service.client.get_player_details = AsyncMock(side_effect=_fake_details())
+
+    run = await service.ingest_player_positions()
+
+    players = {p.last_name: p for p in await _all(db_session, Player)}
+    assert players["Barkley"].position == "RB"
+    assert players["Goedert"].position == "TE"
+    assert all(p.details_fetched_at is not None for p in players.values())
+    assert run.rows_updated == 3
+
+
+@pytest.mark.asyncio
+async def test_positions_rerun_skips_fetched_players(service, db_session):
+    await _seed_guessed_players(db_session)
+    service.client.get_player_details = AsyncMock(side_effect=_fake_details())
+    await service.ingest_player_positions()
+    service.client.get_player_details.reset_mock()
+
+    await service.ingest_player_positions()
+
+    assert service.client.get_player_details.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_positions_respects_limit(service, db_session):
+    await _seed_guessed_players(db_session)
+    service.client.get_player_details = AsyncMock(side_effect=_fake_details())
+
+    await service.ingest_player_positions(limit=2)
+
+    assert service.client.get_player_details.await_count == 2
+    pending = [p for p in await _all(db_session, Player) if p.details_fetched_at is None]
+    assert len(pending) == 1
+
+
+@pytest.mark.asyncio
+async def test_positions_404_is_not_retried(service, db_session):
+    """No profile exists, so the player is marked done and keeps his guess."""
+    await _seed_guessed_players(db_session)
+    service.client.get_player_details = AsyncMock(side_effect=_fake_details({102: 404}))
+
+    run = await service.ingest_player_positions()
+
+    barkley = {p.last_name: p for p in await _all(db_session, Player)}["Barkley"]
+    assert barkley.details_fetched_at is not None
+    assert barkley.position == "WR"
+    assert run.status == "success"
+    assert run.rows_skipped == 1
+
+
+@pytest.mark.asyncio
+async def test_positions_server_error_is_retried(service, db_session):
+    """A 500 is probably temporary, so the player stays pending."""
+    await _seed_guessed_players(db_session)
+    service.client.get_player_details = AsyncMock(side_effect=_fake_details({102: 500}))
+
+    await service.ingest_player_positions()
+
+    barkley = {p.last_name: p for p in await _all(db_session, Player)}["Barkley"]
+    assert barkley.details_fetched_at is None

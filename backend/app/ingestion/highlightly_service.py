@@ -11,6 +11,8 @@ from app.models.player_stats import PlayerStats
 from app.models.ingestion_run import IngestionRun
 from app.ingestion.highlightly_client import HighlightlyClient
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -547,5 +549,84 @@ class HighlightlyIngestionService:
             run.error_message = str(e)
             run.completed_at = datetime.now(timezone.utc)
             logger.error(f"Highlightly box score ingestion failed: {e}")
+
+        return run\
+
+    async def ingest_player_positions(self, limit: int | None = None) -> IngestionRun:
+        """Replace guessed positions with the real ones from player profiles.
+
+        Box scores have no position field, so ingest_box_scores infers one
+        from stat groups. That can't tell a RB who catches passes from a WR,
+        or a TE from either. Each player's profile has the real position,
+        and is fetched once. details_fetched_at tracks who has been done.
+        """
+        run = IngestionRun(
+            source="highlightly", data_type="player_positions", status="running"
+        )
+        self.db.add(run)
+        await self.db.flush()
+
+        try:
+            query = (
+                select(Player)
+                .where(
+                    Player.source == "highlightly",
+                    Player.details_fetched_at.is_(None),
+                )
+                .order_by(Player.id)
+            )
+            if limit:
+                query = query.limit(limit)
+            players = (await self.db.execute(query)).scalars().all()
+
+            updated = 0
+            skipped = 0
+
+            for player in players:
+                try:
+                    details = await self.client.get_player_details(
+                        player_id=int(player.external_id)
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        # No profile exists, and retrying won't create one
+                        player.details_fetched_at = datetime.now(timezone.utc)
+                    logger.warning(
+                        f"Failed to fetch profile for player {player.external_id}: {e}"
+                    )
+                    skipped += 1
+                    continue
+                except Exception as e:
+                    # Timeouts and the like: leave unmarked so the next run retries
+                    logger.warning(
+                        f"Failed to fetch profile for player {player.external_id}: {e}"
+                    )
+                    skipped += 1
+                    continue
+
+                profile = (details[0] if details else {}).get("profile") or {}
+                abbreviation = (profile.get("position") or {}).get("abbreviation")
+                if abbreviation:
+                    player.position = abbreviation
+                    updated += 1
+
+                player.details_fetched_at = datetime.now(timezone.utc)
+
+            await self.db.flush()
+            run.status = "success"
+            run.rows_created = 0
+            run.rows_updated = updated
+            run.rows_skipped = skipped
+            run.completed_at = datetime.now(timezone.utc)
+            logger.info(
+                f"Highlightly position sync complete: {updated} updated, "
+                f"{skipped} skipped, {len(players)} checked"
+            )
+
+        except Exception as e:
+            run.status = "failed"
+            run.error_message = str(e)
+            run.completed_at = datetime.now(timezone.utc)
+            logger.error(f"Highlightly position sync failed: {e}")
 
         return run

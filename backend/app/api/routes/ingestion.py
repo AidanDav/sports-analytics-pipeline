@@ -114,3 +114,21 @@ async def ingest_cfbd_game_stats(
         rows_updated=run.rows_updated,
         error=run.error_message,
     )
+
+@router.post("/highlightly/player-positions", response_model=IngestionRunResponse)
+async def ingest_highlightly_player_positions(
+    limit: int = 500, db: AsyncSession = Depends(get_db)
+):
+    """Fetch real positions for players whose profile hasn't been fetched yet.
+
+    One API call per player. The default of 500 keeps a manual run to a
+    small share of the daily quota.
+    """
+    service = HighlightlyIngestionService(db)
+    run = await service.ingest_player_positions(limit=limit)
+    return IngestionRunResponse(
+        status=run.status,
+        rows_created=run.rows_created,
+        rows_updated=run.rows_updated,
+        error=run.error_message,
+    )

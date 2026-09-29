@@ -23,6 +23,10 @@ class Player(Base):
     position: Mapped[str | None] = mapped_column(String(20))
     # Jersey number, nullable because not all sources provide it
     number: Mapped[int | None] = mapped_column(Integer)
+    # When this player's Highlightly profile was fetched. Null means the
+    # position may still be a guess from box score stats. Unused for CFBD
+    # players, whose positions come straight from rosters.
+    details_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
