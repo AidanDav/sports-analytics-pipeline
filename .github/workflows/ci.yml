@@ -1,0 +1,110 @@
+# GitHub Actions workflow. GitHub reads any .yml file in .github/workflows/
+# and runs it on its own servers when the trigger below happens.
+name: CI
+
+# When this workflow runs
+on:
+  # Every push to main
+  push:
+    branches: [main]
+  # Every pull request, so problems show up before merging
+  pull_request:
+
+# Jobs run in parallel on separate machines. Each one shows up as its
+# own check next to the commit on GitHub.
+jobs:
+  backend:
+    name: Backend tests
+    # A fresh Ubuntu machine with nothing from the project on it
+    runs-on: ubuntu-latest
+    # Every "run:" command below runs inside backend/, like doing cd backend first
+    defaults:
+      run:
+        working-directory: backend
+
+    # Containers that run alongside the job, like the db service in docker-compose.
+    # This Postgres is thrown away when the job finishes.
+    services:
+      postgres:
+        # Same image as docker-compose, so tests run against the same Postgres version
+        image: postgres:16-alpine
+        # Same credentials as the docker-compose defaults. These are throwaway values for a temporary container.
+        env:
+          POSTGRES_USER: sports_user
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: sports_analytics
+        # Maps the container's port to the machine so the tests can reach it on localhost
+        ports:
+          - 5432:5432
+        # Makes GitHub wait until Postgres accepts connections before running any
+        # steps, same idea as the healthcheck and service_healthy in docker-compose
+        options: >-
+          --health-cmd "pg_isready -U sports_user -d sports_analytics"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Environment variables for every step in this job. Settings reads these
+    # the same way it reads the .env file locally.
+    env:
+      # Tests run directly on the machine, not inside the compose network,
+      # so the database is on localhost instead of "db"
+      POSTGRES_HOST: localhost
+      # Keeps the scheduler from starting
+      APP_ENV: testing
+
+    steps:
+      # Downloads the repo onto the machine. Without this the machine is empty.
+      - uses: actions/checkout@v4
+
+      # Installs Python 3.11 to match the backend Dockerfile, so CI tests
+      # the same version that gets deployed
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # Saves downloaded packages between runs. The cache is reused until
+          # requirements.txt changes, which makes later runs much faster.
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # Same install the backend Dockerfile does
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Runs every test with coverage. The job fails if any test fails, or if
+      # less than 90% of app/ is covered by tests.
+      - name: Run tests
+        run: pytest --cov=app --cov-report=term --cov-fail-under=90
+
+  frontend:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    # Every "run:" command below runs inside frontend/
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Latest Node 22. Vite 8 needs 22.12 or newer.
+          node-version: "22"
+          # Same caching idea as pip, keyed on the lock file
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Installs exactly what's in package-lock.json. The strict version of
+      # npm install, meant for CI. It never changes the lock file.
+      - name: Install dependencies
+        run: npm ci
+
+      # Runs oxlint. Warnings pass, errors fail the job.
+      - name: Lint
+        run: npm run lint
+
+      # Runs tsc -b then vite build. tsc -b type-checks all the TypeScript,
+      # so type errors fail here even though the Vite dev server would run them.
+      - name: Build
+        run: npm run build
