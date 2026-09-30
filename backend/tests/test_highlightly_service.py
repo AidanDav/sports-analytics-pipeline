@@ -347,6 +347,8 @@ async def test_ingest_matches_preseason_has_no_week(service, db_session):
     assert games["4001"].week is None
     # Preseason must not become the anchor and shift regular-season weeks
     assert games["5001"].week == 1
+    assert games["4001"].season_type == "preseason"
+    assert games["5001"].season_type == "regular"
 
 
 @pytest.mark.asyncio

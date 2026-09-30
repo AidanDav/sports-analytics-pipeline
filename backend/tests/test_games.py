@@ -346,3 +346,13 @@ async def test_get_game_stats_uses_team_at_game_time(client, db_session):
     )).json()
 
     assert "Saquon Barkley" in {l["player_name"] for l in eagles_lines}
+
+@pytest.mark.asyncio
+async def test_get_games_includes_season_type(client, db_session):
+    _, _, game = await _seed_box_score(db_session)
+    game.season_type = "regular"
+    await db_session.commit()
+
+    response = await client.get("/games")
+
+    assert response.json()["data"][0]["season_type"] == "regular"

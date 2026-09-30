@@ -148,6 +148,10 @@ class HighlightlyIngestionService:
     # Statuses where the game hasn't kicked off. Highlightly sends "0 - 0"
     # for these, which would otherwise be stored as a real 0-0 score.
     UNPLAYED_STATUSES = {"scheduled", "postponed", "cancelled"}
+    ROUND_TO_SEASON_TYPE = {
+        "preseason": "preseason",
+        "regular-season": "regular",
+    }
 
     @staticmethod
     def _parse_date(raw_date: str | None) -> date | None:
@@ -288,6 +292,7 @@ class HighlightlyIngestionService:
 
                 game_date = self._parse_date(raw.get("date"))
                 week = self._week_number(raw.get("round"), game_date, anchor)
+                season_type = self.ROUND_TO_SEASON_TYPE.get(raw.get("round"))
 
                 if existing:
                     existing.season = raw.get("season", existing.season)
@@ -298,6 +303,7 @@ class HighlightlyIngestionService:
                     existing.away_score = away_score
                     existing.game_date = game_date
                     existing.status = status
+                    existing.season_type = season_type
                     updated += 1
                 else:
                     game = Game(
@@ -312,6 +318,7 @@ class HighlightlyIngestionService:
                         away_score=away_score,
                         game_date=game_date,
                         status=status,
+                        season_type=season_type,
                     )
                     self.db.add(game)
                     created += 1

@@ -111,7 +111,7 @@ export default function TeamDetail() {
   );
 
   const summary = useMemo(() => {
-    const played = rows.filter((r) => r.result !== null);
+    const played = rows.filter((r) => r.result !== null && r.game.season_type !== "preseason");
     const count = (r: ScheduleRow["result"]) => played.filter((p) => p.result === r).length;
     const pointsFor = played.reduce((sum, r) => sum + (r.teamScore ?? 0), 0);
     const pointsAgainst = played.reduce((sum, r) => sum + (r.oppScore ?? 0), 0);
@@ -222,7 +222,7 @@ export default function TeamDetail() {
                     return (
                       <Fragment key={row.game.id}>
                         <tr className="border-b border-slate-100">
-                          <td className="px-4 py-3 text-slate-500">{row.game.week ?? "--"}</td>
+                          <td className="px-4 py-3 text-slate-500">{row.game.season_type === "preseason" ? "PRE" : row.game.week ?? "--"}</td>
                           <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
                             {formatDate(row.game.game_date)}
                           </td>

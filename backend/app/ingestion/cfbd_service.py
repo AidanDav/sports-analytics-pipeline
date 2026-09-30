@@ -227,6 +227,7 @@ class CFBDIngestionService:
                     existing.game_date = game_date
                     existing.venue = raw.get("venue")
                     existing.status = status
+                    existing.season_type = "regular"
                     updated += 1
                 else:
                     game = Game(
@@ -242,6 +243,7 @@ class CFBDIngestionService:
                         game_date=game_date,
                         status=status,
                         venue=raw.get("venue"),
+                        season_type="regular",
                     )
                     self.db.add(game)
                     created += 1

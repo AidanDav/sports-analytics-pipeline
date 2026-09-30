@@ -530,3 +530,12 @@ async def test_stat_weeks_latest_is_always_included(service, db_session):
 @pytest.mark.asyncio
 async def test_stat_weeks_none_when_no_finished_games(service, db_session):
     assert await service.stat_weeks_to_sync(2026) == []
+
+@pytest.mark.asyncio
+async def test_ingest_games_marks_regular_season(service, db_session):
+    await service.ingest_teams()
+    await service.ingest_games(year=2024)
+
+    games = await _all(db_session, Game)
+    assert games
+    assert all(g.season_type == "regular" for g in games)

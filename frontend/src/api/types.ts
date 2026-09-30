@@ -20,6 +20,7 @@ export interface Game {
   id: number;
   season: number;
   week: number | null;
+  season_type: string | null;
   home_team_id: number | null;
   away_team_id: number | null;
   home_team: string;

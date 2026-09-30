@@ -56,7 +56,7 @@ async def get_games(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar()
 
-    query = query.order_by(Game.season.desc(), Game.week, Game.game_date).offset(offset).limit(limit)
+    query = query.order_by(Game.season.desc(), Game.week.asc().nulls_first(), Game.game_date)
     result = await db.execute(query)
     games = result.scalars().all()
 
@@ -94,6 +94,7 @@ async def get_games(
                 game_date=str(game.game_date) if game.game_date else None,
                 status=game.status,
                 venue=game.venue,
+                season_type=game.season_type,
             )
             for game in games
         ],

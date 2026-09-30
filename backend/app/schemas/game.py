@@ -5,6 +5,7 @@ class GameResponse(BaseModel):
     id: int
     season: int
     week: int | None
+    season_type: str | None
     # IDs let the frontend tell home from away and link to the opponent
     # without comparing team names
     home_team_id: int | None

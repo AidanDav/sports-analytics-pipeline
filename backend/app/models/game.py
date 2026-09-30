@@ -15,6 +15,7 @@ class Game(Base):
     league: Mapped[str] = mapped_column(String(10), nullable=False)
     season: Mapped[int] = mapped_column(Integer, nullable=False)
     week: Mapped[int | None] = mapped_column(Integer)
+    season_type: Mapped[str | None] = mapped_column(String(20))
     # Two foreign keys for the two teams playing
     home_team_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("teams.id", ondelete="SET NULL")
